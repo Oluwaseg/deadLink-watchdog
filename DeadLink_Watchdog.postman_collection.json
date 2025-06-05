@@ -1,0 +1,947 @@
+{
+  "info": {
+    "name": "DeadLink Watchdog API",
+    "description": "Complete API collection for DeadLink Watchdog - Nigerian Website Link Monitor.\n\n🚀 QUICK START:\n1. Import this collection + environment\n2. Run 'Register User' to create account\n3. Run 'Login User' to get access token (auto-saved)\n4. All other requests will use the saved token automatically\n\n📝 NOTE: Auth endpoints (register/login/forgot/reset) don't need tokens. All other endpoints inherit collection-level Bearer auth.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "websiteId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "crawlResultId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "resetToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "🏥 Health Check",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "API Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api",
+              "host": ["{{baseUrl}}"],
+              "path": ["api"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🔐 Authentication",
+      "item": [
+        {
+          "name": "Register User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.environment.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.environment.set('userId', response.data.user.id);",
+                  "    pm.collectionVariables.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.collectionVariables.set('userId', response.data.user.id);",
+                  "    console.log('✅ User registered and tokens saved to both environment and collection');",
+                  "    console.log('🔑 Access Token:', response.data.tokens.accessToken.substring(0, 20) + '...');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "register"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "📧 Verify Email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.environment.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.environment.set('userId', response.data.user.id);",
+                  "    pm.collectionVariables.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.collectionVariables.set('userId', response.data.user.id);",
+                  "    console.log('✅ Email verified and tokens saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify-email",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "verify-email"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🔄 Resend Verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/resend-verification",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "resend-verification"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.environment.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.environment.set('userId', response.data.user.id);",
+                  "    pm.collectionVariables.set('accessToken', response.data.tokens.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', response.data.tokens.refreshToken);",
+                  "    pm.collectionVariables.set('userId', response.data.user.id);",
+                  "    console.log('✅ Login successful and tokens saved to both environment and collection');",
+                  "    console.log('🔑 Access Token:', response.data.tokens.accessToken.substring(0, 20) + '...');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "refresh"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Updated First\",\n  \"lastName\": \"Updated Last\",\n  \"email\": \"updated@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "profile"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"oldpassword123\",\n  \"newPassword\": \"newpassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/change-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "change-password"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🔑 Forgot Password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    if (response.resetToken) {",
+                  "        pm.environment.set('resetToken', response.resetToken);",
+                  "        pm.collectionVariables.set('resetToken', response.resetToken);",
+                  "        console.log('✅ Reset token saved:', response.resetToken);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "forgot-password"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🔓 Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"newPassword\": \"newpassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "reset-password"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🌐 Websites",
+      "item": [
+        {
+          "name": "List Websites",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/websites?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Nigerian News Website",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('websiteId', response.data.website.id);",
+                  "    pm.collectionVariables.set('websiteId', response.data.website.id);",
+                  "    console.log('✅ Website added with ID:', response.data.website.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://punchng.com\",\n  \"name\": \"Punch Newspapers\",\n  \"description\": \"Leading Nigerian newspaper\",\n  \"category\": \"news\",\n  \"crawlFrequency\": \"daily\",\n  \"notificationEmail\": \"alerts@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Government Website",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://www.nimc.gov.ng\",\n  \"name\": \"NIMC - National Identity Management Commission\",\n  \"description\": \"Official NIMC website\",\n  \"category\": \"government\",\n  \"crawlFrequency\": \"weekly\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "💰 Add Wallet Wise (Financial App)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('websiteId', response.data.website.id);",
+                  "    pm.collectionVariables.set('websiteId', response.data.website.id);",
+                  "    console.log('✅ Wallet Wise added with ID:', response.data.website.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"http://wallet-wise-iota.vercel.app\",\n  \"name\": \"Wallet Wise\",\n  \"description\": \"Financial solution for personal finance management\",\n  \"category\": \"financial\",\n  \"notificationEmail\": \"sagep176@gmail.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🪝 Add Website with Webhook",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.environment.set('websiteId', response.data.website.id);",
+                  "    pm.collectionVariables.set('websiteId', response.data.website.id);",
+                  "    console.log('✅ Website with webhook added with ID:', response.data.website.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://techpoint.africa\",\n  \"name\": \"Techpoint Africa\",\n  \"description\": \"African tech news and insights\",\n  \"category\": \"business\",\n  \"crawlFrequency\": \"weekly\",\n  \"notificationEmail\": \"alerts@example.com\",\n  \"webhookUrl\": \"https://webhook.site/unique-id\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Website Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/websites/{{websiteId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites", "{{websiteId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🚀 Trigger Manual Crawl",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"crawlDepth\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites/{{websiteId}}/crawl",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites", "{{websiteId}}", "crawl"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Broken Links for Website",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/websites/{{websiteId}}/broken-links?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites", "{{websiteId}}", "broken-links"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "✏️ Update Website",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated Website Name\",\n  \"description\": \"Updated description\",\n  \"category\": \"financial\",\n  \"crawlFrequency\": \"weekly\",\n  \"notificationEmail\": \"updated@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/websites/{{websiteId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites", "{{websiteId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🗑️ Delete Website",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/websites/{{websiteId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "websites", "{{websiteId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "📊 Crawl Results",
+      "item": [
+        {
+          "name": "List All Crawl Results",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Crawl Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls/stats/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls", "stats", "summary"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Crawl Trends",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls/stats/trends?days=30",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls", "stats", "trends"],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "30"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Crawl Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls/{{crawlResultId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls", "{{crawlResultId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Broken Links for Crawl",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls/{{crawlResultId}}/broken-links?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls", "{{crawlResultId}}", "broken-links"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "🔄 Retry Failed Crawl",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/crawls/{{crawlResultId}}/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crawls", "{{crawlResultId}}", "retry"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "📈 Dashboard",
+      "item": [
+        {
+          "name": "Dashboard Overview",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/overview",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "overview"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Website Health Scores",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/health-scores",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "health-scores"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Broken Links Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/broken-links-summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "broken-links-summary"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "System Alerts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/alerts",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "alerts"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Website Categories",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/website-categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "website-categories"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🔧 Admin",
+      "item": [
+        {
+          "name": "Queue Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/queue/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "queue", "stats"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

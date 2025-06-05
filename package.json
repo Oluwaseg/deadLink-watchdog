@@ -1,0 +1,51 @@
+{
+  "name": "deadlink-watchdog",
+  "version": "1.0.0",
+  "description": "API that monitors broken links in Nigerian websites",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "setup": "node start.js",
+    "db:migrate": "sequelize-cli db:migrate",
+    "db:reset": "sequelize-cli db:migrate:undo:all && npm run db:migrate",
+    "db:drop-tables": "node -e \"const { Sequelize } = require('sequelize'); const config = require('./config/database.js'); async function dropAll() { const sequelize = new Sequelize(config.development); try { await sequelize.authenticate(); console.log('🔗 Connected to database'); await sequelize.query('DROP TABLE IF EXISTS broken_links CASCADE;'); console.log('🗑️ Dropped broken_links'); await sequelize.query('DROP TABLE IF EXISTS crawl_results CASCADE;'); console.log('🗑️ Dropped crawl_results'); await sequelize.query('DROP TABLE IF EXISTS websites CASCADE;'); console.log('🗑️ Dropped websites'); await sequelize.query('DROP TABLE IF EXISTS users CASCADE;'); console.log('🗑️ Dropped users'); await sequelize.query('DROP TABLE IF EXISTS \\\"SequelizeMeta\\\" CASCADE;'); console.log('🗑️ Dropped SequelizeMeta'); await sequelize.query('DROP TYPE IF EXISTS enum_users_role CASCADE;'); await sequelize.query('DROP TYPE IF EXISTS enum_websites_category CASCADE;'); await sequelize.query('DROP TYPE IF EXISTS enum_websites_crawlFrequency CASCADE;'); await sequelize.query('DROP TYPE IF EXISTS enum_crawl_results_status CASCADE;'); await sequelize.query('DROP TYPE IF EXISTS enum_broken_links_errorType CASCADE;'); console.log('🗑️ Dropped all enums'); console.log('✅ All tables dropped successfully!'); await sequelize.close(); } catch (error) { console.error('❌ Error:', error.message); process.exit(1); } } dropAll();\"",
+    "test": "node test-setup.js",
+    "test:watch": "nodemon test-setup.js",
+    "redis:flush": "redis-cli FLUSHALL"
+  },
+  "keywords": [
+    "link-checker",
+    "web-crawler",
+    "monitoring",
+    "api",
+    "nigeria"
+  ],
+  "author": "DeadLink Watchdog Team",
+  "license": "MIT",
+  "dependencies": {
+    "@getbrevo/brevo": "^2.2.0",
+    "axios": "^1.9.0",
+    "bcryptjs": "^3.0.2",
+    "bull": "^4.16.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "express-validator": "^7.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "node-cron": "^4.0.7",
+    "nodemailer": "^7.0.3",
+    "pg": "^8.16.0",
+    "puppeteer": "^24.9.0",
+    "redis": "^5.1.1",
+    "sequelize": "^6.37.7",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10",
+    "sequelize-cli": "^6.6.3"
+  }
+}
