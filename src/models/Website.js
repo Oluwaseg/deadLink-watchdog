@@ -44,7 +44,8 @@ module.exports = (sequelize, DataTypes) => {
       },
       crawlFrequency: {
         type: DataTypes.ENUM('daily', 'weekly', 'monthly'),
-        defaultValue: 'weekly',
+        allowNull: true,
+        defaultValue: null,
       },
       lastCrawledAt: {
         type: DataTypes.DATE,

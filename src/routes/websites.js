@@ -34,16 +34,19 @@ const validateWebsite = [
     ])
     .withMessage('Invalid category'),
   body('crawlFrequency')
-    .optional()
+    .optional({ nullable: true })
+    .if((value) => value !== null && value !== '')
     .isIn(['daily', 'weekly', 'monthly'])
     .withMessage('Invalid crawl frequency'),
   body('notificationEmail')
-    .optional()
+    .optional({ nullable: true })
+    .if((value) => value !== null && value !== '')
     .isEmail()
     .normalizeEmail()
     .withMessage('Please provide a valid notification email'),
   body('webhookUrl')
-    .optional()
+    .optional({ nullable: true })
+    .if((value) => value !== null && value !== '')
     .isURL()
     .withMessage('Please provide a valid webhook URL'),
 ];
@@ -178,10 +181,21 @@ router.post(
   validateWebsite,
   checkValidation,
   asyncHandler(async (req, res) => {
+    // Clean up request body to handle empty/null values
     const websiteData = {
       ...req.body,
       userId: req.user.id,
+      crawlFrequency: req.body.crawlFrequency || null,
+      notificationEmail: req.body.notificationEmail || null,
+      webhookUrl: req.body.webhookUrl || null
     };
+
+    // Remove empty string values to let default values take effect
+    Object.keys(websiteData).forEach(key => {
+      if (websiteData[key] === '') {
+        websiteData[key] = null;
+      }
+    });
 
     // Check if URL already exists for this user
     const existingWebsite = await Website.findOne({
@@ -283,6 +297,39 @@ router.put(
       }
     }
 
+    // Handle crawlFrequency changes
+    if ('crawlFrequency' in req.body) {
+      if (!req.body.crawlFrequency) {
+        // If crawlFrequency is being removed, clear nextCrawlAt
+        req.body.nextCrawlAt = null;
+      } else {
+        // If setting a new crawlFrequency, calculate next crawl time
+        const calculateNextCrawlTime = (frequency) => {
+          const now = new Date();
+          const nextCrawl = new Date(now);
+
+          switch (frequency) {
+            case 'daily':
+              nextCrawl.setDate(now.getDate() + 1);
+              break;
+            case 'weekly':
+              nextCrawl.setDate(now.getDate() + 7);
+              break;
+            case 'monthly':
+              nextCrawl.setMonth(now.getMonth() + 1);
+              break;
+            default:
+              nextCrawl.setDate(now.getDate() + 7);
+          }
+
+          nextCrawl.setHours(2, 0, 0, 0);
+          return nextCrawl;
+        };
+
+        req.body.nextCrawlAt = calculateNextCrawlTime(req.body.crawlFrequency);
+      }
+    }
+
     await website.update(req.body);
 
     res.json({
@@ -315,6 +362,16 @@ router.delete(
     // Remove recurring crawl job
     await queueService.removeRecurringCrawlJob(website.id);
 
+    // Delete associated records first
+    await BrokenLink.destroy({
+      where: { websiteId: website.id }
+    });
+
+    await CrawlResult.destroy({
+      where: { websiteId: website.id }
+    });
+
+    // Now delete the website
     await website.destroy();
 
     res.json({
