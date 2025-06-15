@@ -8,7 +8,7 @@ module.exports = {
     host: process.env.DB_HOST || 'localhost',
     port: process.env.DB_PORT || 5432,
     dialect: 'postgres',
-    logging: false, // Disable SQL query logging for cleaner output
+    logging: false,
     pool: {
       max: 5,
       min: 0,
@@ -39,18 +39,17 @@ module.exports = {
     port: process.env.DB_PORT || 5432,
     dialect: 'postgres',
     logging: false,
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false,
+      },
+    },
     pool: {
       max: 20,
       min: 0,
       acquire: 30000,
       idle: 10000,
     },
-    ssl:
-      process.env.NODE_ENV === 'production'
-        ? {
-            require: true,
-            rejectUnauthorized: false,
-          }
-        : false,
   },
 };
