@@ -81,6 +81,24 @@ module.exports = (sequelize, DataTypes) => {
           isUrl: true,
         },
       },
+      isFlagged: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      reports: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+      },
+      moderatedAt: {
+        type: DataTypes.DATE,
+      },
+      moderatedBy: {
+        type: DataTypes.UUID,
+        references: {
+          model: 'users',
+          key: 'id',
+        },
+      },
       userId: {
         type: DataTypes.UUID,
         allowNull: false,

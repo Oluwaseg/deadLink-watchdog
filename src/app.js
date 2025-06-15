@@ -13,6 +13,7 @@ const authRoutes = require('./routes/auth');
 const websiteRoutes = require('./routes/websites');
 const crawlRoutes = require('./routes/crawls');
 const dashboardRoutes = require('./routes/dashboard');
+const adminRoutes = require('./routes/admin');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -96,6 +97,7 @@ class App {
     this.app.use('/api/websites', authenticateToken, websiteRoutes);
     this.app.use('/api/crawls', authenticateToken, crawlRoutes);
     this.app.use('/api/dashboard', authenticateToken, dashboardRoutes);
+    this.app.use('/api/admin', adminRoutes); // Admin routes already have auth middleware
 
     // Admin routes (queue management)
     this.app.get(
