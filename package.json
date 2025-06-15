@@ -42,6 +42,8 @@
     "puppeteer": "^24.9.0",
     "redis": "^5.1.1",
     "sequelize": "^6.37.7",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

@@ -9,7 +9,69 @@ const { Op } = require('sequelize');
 const router = express.Router();
 const queueService = new QueueService();
 
-// Apply auth middleware to all admin routes
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Stats:
+ *       type: object
+ *       properties:
+ *         totalUsers:
+ *           type: integer
+ *           description: Total number of users in the system
+ *         totalWebsites:
+ *           type: integer
+ *           description: Total number of websites being monitored
+ *         totalCrawls:
+ *           type: integer
+ *           description: Total number of crawls performed
+ *         totalBrokenLinks:
+ *           type: integer
+ *           description: Total number of broken links found
+ *         activeWebsites:
+ *           type: integer
+ *           description: Number of currently active websites
+ *         recentUsers:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               name:
+ *                 type: string
+ *               createdAt:
+ *                 type: string
+ *                 format: date-time
+ */
+
+/**
+ * @swagger
+ * /api/admin/stats:
+ *   get:
+ *     summary: Get system-wide statistics
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: System statistics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   $ref: '#/components/schemas/Stats'
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *       403:
+ *         description: Forbidden - User is not an admin
+ */
 router.use(authenticateToken);
 router.use(requireAdmin);
 
@@ -56,9 +118,87 @@ router.get(
   })
 );
 
-// @route   GET /api/admin/users
-// @desc    Get all users with pagination and filtering
-// @access  Admin
+/**
+ * @swagger
+ * /api/admin/users:
+ *   get:
+ *     summary: Get all users with pagination and filtering
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Number of items per page
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search term for email or name
+ *       - in: query
+ *         name: role
+ *         schema:
+ *           type: string
+ *           enum: [user, admin]
+ *         description: Filter by user role
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *         description: Filter by user active status
+ *     responses:
+ *       200:
+ *         description: List of users retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     users:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                           email:
+ *                             type: string
+ *                           name:
+ *                             type: string
+ *                           role:
+ *                             type: string
+ *                           isActive:
+ *                             type: boolean
+ *                           createdAt:
+ *                             type: string
+ *                             format: date-time
+ *                     pagination:
+ *                       type: object
+ *                       properties:
+ *                         page:
+ *                           type: integer
+ *                         limit:
+ *                           type: integer
+ *                         total:
+ *                           type: integer
+ *                         pages:
+ *                           type: integer
+ */
 router.get(
   '/users',
   [
@@ -135,9 +275,62 @@ router.put(
   })
 );
 
-// @route   PUT /api/admin/users/:id/role
-// @desc    Update user role
-// @access  Admin
+/**
+ * @swagger
+ * /api/admin/users/{id}/role:
+ *   put:
+ *     summary: Update user role
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *       - in: query
+ *         name: role
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [user, admin]
+ *         description: New role for the user
+ *     responses:
+ *       200:
+ *         description: User role updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                         name:
+ *                           type: string
+ *                         role:
+ *                           type: string
+ *                         isActive:
+ *                           type: boolean
+ *                         createdAt:
+ *                           type: string
+ *                           format: date-time
+ *       403:
+ *         description: Forbidden - Cannot modify your own role
+ *       404:
+ *         description: Not Found - User not found
+ */
 router.put(
   '/users/:id/role',
   [
@@ -165,9 +358,77 @@ router.put(
   })
 );
 
-// @route   GET /api/admin/websites/moderation
-// @desc    Get websites requiring moderation
-// @access  Admin
+/**
+ * @swagger
+ * /api/admin/websites/moderation:
+ *   get:
+ *     summary: Get websites requiring moderation
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Page number
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Number of items per page
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [flagged, reported, blocked]
+ *         description: Filter by website status
+ *     responses:
+ *       200:
+ *         description: List of websites requiring moderation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     websites:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                           url:
+ *                             type: string
+ *                           isActive:
+ *                             type: boolean
+ *                           isFlagged:
+ *                             type: boolean
+ *                           reports:
+ *                             type: integer
+ *                           createdAt:
+ *                             type: string
+ *                             format: date-time
+ *                     pagination:
+ *                       type: object
+ *                       properties:
+ *                         page:
+ *                           type: integer
+ *                         limit:
+ *                           type: integer
+ *                         total:
+ *                           type: integer
+ *                         pages:
+ *                           type: integer
+ */
 router.get(
   '/websites/moderation',
   [
@@ -220,9 +481,60 @@ router.get(
   })
 );
 
-// @route   PUT /api/admin/websites/:id/moderate
-// @desc    Moderate a website (block/unblock)
-// @access  Admin
+/**
+ * @swagger
+ * /api/admin/websites/{id}/moderate:
+ *   put:
+ *     summary: Moderate a website (block/unblock)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Website ID
+ *       - in: query
+ *         name: action
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [block, unblock]
+ *         description: Action to perform on the website
+ *     responses:
+ *       200:
+ *         description: Website moderated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     website:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         url:
+ *                           type: string
+ *                         isActive:
+ *                           type: boolean
+ *                         isFlagged:
+ *                           type: boolean
+ *                         reports:
+ *                           type: integer
+ *                         createdAt:
+ *                           type: string
+ *                           format: date-time
+ *       404:
+ *         description: Not Found - Website not found
+ */
 router.put(
   '/websites/:id/moderate',
   [
@@ -252,9 +564,86 @@ router.put(
   })
 );
 
-// @route   GET /api/admin/queue
-// @desc    Get queue statistics and jobs
-// @access  Admin
+/**
+ * @swagger
+ * /api/admin/queue:
+ *   get:
+ *     summary: Get queue statistics and jobs
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Queue statistics and jobs retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     stats:
+ *                       type: object
+ *                       properties:
+ *                         totalJobs:
+ *                           type: integer
+ *                         pending:
+ *                           type: integer
+ *                         active:
+ *                           type: integer
+ *                         completed:
+ *                           type: integer
+ *                         failed:
+ *                           type: integer
+ *                     jobs:
+ *                       type: object
+ *                       properties:
+ *                         active:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               id:
+ *                                 type: string
+ *                               name:
+ *                                 type: string
+ *                               status:
+ *                                 type: string
+ *                               createdAt:
+ *                                 type: string
+ *                                 format: date-time
+ *                         completed:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               id:
+ *                                 type: string
+ *                               name:
+ *                                 type: string
+ *                               status:
+ *                                 type: string
+ *                               createdAt:
+ *                                 type: string
+ *                                 format: date-time
+ *                         failed:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               id:
+ *                                 type: string
+ *                               name:
+ *                                 type: string
+ *                               status:
+ *                                 type: string
+ *                               createdAt:
+ *                                 type: string
+ *                                 format: date-time
+ */
 router.get(
   '/queue',
   asyncHandler(async (req, res) => {
@@ -274,6 +663,237 @@ router.get(
           completed: completedJobs,
           failed: failedJobs
         }
+      }
+    });
+  })
+);
+
+/**
+ * @swagger
+ * /api/admin/users/{userId}/status:
+ *   put:
+ *     summary: Update user active status
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the user to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               isActive:
+ *                 type: boolean
+ *             required:
+ *               - isActive
+ *     responses:
+ *       200:
+ *         description: User status updated successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: User not found
+ */
+router.put(
+  '/users/:userId/status',
+  param('userId').isUUID(),
+  asyncHandler(async (req, res) => {
+    const { userId } = req.params;
+    const { isActive } = req.body;
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    await user.update({ isActive });
+
+    res.json({
+      success: true,
+      message: 'User status updated successfully'
+    });
+  })
+);
+
+/**
+ * @swagger
+ * /api/admin/analytics/websites:
+ *   get:
+ *     summary: Get website analytics
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 365
+ *         description: Period in days to analyze
+ *     responses:
+ *       200:
+ *         description: Website analytics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     totalWebsites:
+ *                       type: integer
+ *                     newWebsites:
+ *                       type: integer
+ *                     activeWebsites:
+ *                       type: integer
+ *                     websitesByCategory:
+ *                       type: object
+ *                     crawlStats:
+ *                       type: object
+ */
+router.get(
+  '/analytics/websites',
+  query('period').optional().isInt({ min: 1, max: 365 }),
+  asyncHandler(async (req, res) => {
+    const period = parseInt(req.query.period) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - period);
+
+    const [totalWebsites, newWebsites, websitesByCategory, crawlStats] = await Promise.all([
+      Website.count(),
+      Website.count({
+        where: {
+          createdAt: {
+            [Op.gte]: startDate
+          }
+        }
+      }),
+      Website.count({
+        group: ['category']
+      }),
+      CrawlResult.findAll({
+        where: {
+          createdAt: {
+            [Op.gte]: startDate
+          }
+        },
+        attributes: [
+          [db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'date'],
+          [db.sequelize.fn('COUNT', '*'), 'count']
+        ],
+        group: ['date'],
+        order: [[db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'ASC']]
+      })
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalWebsites,
+        newWebsites,
+        websitesByCategory,
+        crawlStats
+      }
+    });
+  })
+);
+
+/**
+ * @swagger
+ * /api/admin/analytics/users:
+ *   get:
+ *     summary: Get user analytics
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 365
+ *         description: Period in days to analyze
+ *     responses:
+ *       200:
+ *         description: User analytics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     totalUsers:
+ *                       type: integer
+ *                     newUsers:
+ *                       type: integer
+ *                     activeUsers:
+ *                       type: integer
+ *                     userStats:
+ *                       type: object
+ */
+router.get(
+  '/analytics/users',
+  query('period').optional().isInt({ min: 1, max: 365 }),
+  asyncHandler(async (req, res) => {
+    const period = parseInt(req.query.period) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - period);
+
+    const [totalUsers, newUsers, activeUsers, userStats] = await Promise.all([
+      User.count(),
+      User.count({
+        where: {
+          createdAt: {
+            [Op.gte]: startDate
+          }
+        }
+      }),
+      User.count({
+        where: {
+          isActive: true
+        }
+      }),
+      User.findAll({
+        where: {
+          createdAt: {
+            [Op.gte]: startDate
+          }
+        },
+        attributes: [
+          [db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'date'],
+          [db.sequelize.fn('COUNT', '*'), 'count']
+        ],
+        group: ['date'],
+        order: [[db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'ASC']]
+      })
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalUsers,
+        newUsers,
+        activeUsers,
+        userStats
       }
     });
   })

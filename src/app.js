@@ -4,6 +4,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const swaggerUI = require('swagger-ui-express');
+const swaggerSpec = require('./config/swagger');
 
 const config = require('../config/config');
 const db = require('./models');
@@ -42,6 +44,9 @@ class App {
   setupMiddleware() {
     // Security middleware
     this.app.use(helmet());
+
+    // Swagger UI
+    this.app.use('/api-docs', swaggerUI.serve, swaggerUI.setup(swaggerSpec));
 
     // CORS configuration
     this.app.use(
