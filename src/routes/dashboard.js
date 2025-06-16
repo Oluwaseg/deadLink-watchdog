@@ -19,6 +19,63 @@ const checkValidation = (req, res, next) => {
   next();
 };
 
+/**
+ * @swagger
+ * tags:
+ *   name: Dashboard
+ *   description: Dashboard statistics and metrics
+ */
+
+/**
+ * @swagger
+ * /api/dashboard/overview:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get dashboard overview statistics
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard overview retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     overview:
+ *                       type: object
+ *                       properties:
+ *                         totalWebsites:
+ *                           type: integer
+ *                         activeWebsites:
+ *                           type: integer
+ *                         totalCrawls:
+ *                           type: integer
+ *                         recentCrawls:
+ *                           type: integer
+ *                         totalBrokenLinks:
+ *                           type: integer
+ *                         recentBrokenLinks:
+ *                           type: integer
+ *                         averageHealthScore:
+ *                           type: number
+ *                     topIssues:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     recentActivity:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ */
+
 // @route   GET /api/dashboard/overview
 // @desc    Get dashboard overview statistics
 // @access  Private
@@ -112,6 +169,48 @@ router.get('/overview', asyncHandler(async (req, res) => {
   });
 }));
 
+/**
+ * @swagger
+ * /api/dashboard/health-scores:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get health scores for all websites
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Health scores retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     websites:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     categories:
+ *                       type: object
+ *                       properties:
+ *                         critical:
+ *                           type: integer
+ *                         warning:
+ *                           type: integer
+ *                         good:
+ *                           type: integer
+ *                         excellent:
+ *                           type: integer
+ *                     breakdown:
+ *                       type: object
+ *       401:
+ *         description: Unauthorized
+ */
+
 // @route   GET /api/dashboard/health-scores
 // @desc    Get health scores for all websites
 // @access  Private
@@ -144,6 +243,44 @@ router.get('/health-scores', asyncHandler(async (req, res) => {
     }
   });
 }));
+
+/**
+ * @swagger
+ * /api/dashboard/broken-links-summary:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get broken links summary by error type
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Broken links summary retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     summary:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           errorType:
+ *                             type: string
+ *                           count:
+ *                             type: integer
+ *                     recentBrokenLinks:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ */
 
 // @route   GET /api/dashboard/broken-links-summary
 // @desc    Get broken links summary by error type
@@ -193,6 +330,41 @@ router.get('/broken-links-summary', asyncHandler(async (req, res) => {
     }
   });
 }));
+
+/**
+ * @swagger
+ * /api/dashboard/crawl-performance:
+ *   get:
+ *     tags: [Dashboard]
+ *     summary: Get crawl performance metrics
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Crawl performance metrics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     averageResponseTime:
+ *                       type: number
+ *                     averagePagesPerCrawl:
+ *                       type: number
+ *                     successRate:
+ *                       type: number
+ *                     performanceByWebsite:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ */
 
 // @route   GET /api/dashboard/crawl-performance
 // @desc    Get crawl performance metrics

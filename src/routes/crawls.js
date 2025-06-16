@@ -20,6 +20,72 @@ const checkValidation = (req, res, next) => {
   next();
 };
 
+/**
+ * @swagger
+ * tags:
+ *   name: Crawls
+ *   description: Website crawl management and results
+ */
+
+/**
+ * @swagger
+ * /api/crawls:
+ *   get:
+ *     tags: [Crawls]
+ *     summary: Get all crawls with pagination and filtering
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number for pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, in_progress, completed, failed]
+ *         description: Filter by crawl status
+ *       - in: query
+ *         name: websiteId
+ *         schema:
+ *           type: string
+ *         description: Filter by website ID
+ *     responses:
+ *       200:
+ *         description: List of crawls retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     crawls:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     total:
+ *                       type: integer
+ *                     page:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *       401:
+ *         description: Unauthorized
+ */
+
 // @route   GET /api/crawls
 // @desc    Get all crawl results for the authenticated user
 // @access  Private
@@ -86,6 +152,39 @@ router.get(
     });
   })
 );
+
+/**
+ * @swagger
+ * /api/crawls/stats/summary:
+ *   get:
+ *     tags: [Crawls]
+ *     summary: Get crawl statistics summary
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Crawl statistics retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     totalCrawls:
+ *                       type: integer
+ *                     completedCrawls:
+ *                       type: integer
+ *                     failedCrawls:
+ *                       type: integer
+ *                     averageResponseTime:
+ *                       type: number
+ *       401:
+ *         description: Unauthorized
+ */
 
 // @route   GET /api/crawls/stats/summary
 // @desc    Get crawl statistics summary for the user
@@ -175,6 +274,50 @@ router.get(
     });
   })
 );
+
+/**
+ * @swagger
+ * /api/crawls/stats/trends:
+ *   get:
+ *     tags: [Crawls]
+ *     summary: Get crawl trends over time
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         schema:
+ *           type: integer
+ *           default: 30
+ *         description: Number of days to include in trend data
+ *     responses:
+ *       200:
+ *         description: Crawl trends retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     trends:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           date:
+ *                             type: string
+ *                             format: date
+ *                           completed:
+ *                             type: integer
+ *                           failed:
+ *                             type: integer
+ *       401:
+ *         description: Unauthorized
+ */
 
 // @route   GET /api/crawls/stats/trends
 // @desc    Get crawl trends data for charts
@@ -316,6 +459,146 @@ router.get(
   })
 );
 
+/**
+ * @swagger
+ * /api/crawls/{id}:
+ *   get:
+ *     tags: [Crawls]
+ *     summary: Get a specific crawl by ID
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Crawl ID
+ *     responses:
+ *       200:
+ *         description: Crawl details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     crawl:
+ *                       type: object
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Crawl not found
+ */
+
+// @route   GET /api/crawls/:id
+// @desc    Get a specific crawl result
+// @access  Private
+router.get(
+  '/:id',
+  [param('id').isUUID().withMessage('Crawl ID must be a valid UUID')],
+  checkValidation,
+  asyncHandler(async (req, res) => {
+    const crawlResult = await CrawlResult.findOne({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+      },
+      include: [
+        {
+          model: Website,
+          as: 'website',
+          attributes: ['id', 'name', 'url', 'category'],
+        },
+        {
+          model: BrokenLink,
+          as: 'brokenLinkRecords',
+          limit: 50,
+          order: [['createdAt', 'DESC']],
+        },
+      ],
+    });
+
+    if (!crawlResult) {
+      throw new AppError(
+        'Crawl result not found',
+        404,
+        'CRAWL_RESULT_NOT_FOUND'
+      );
+    }
+
+    res.json({
+      success: true,
+      data: { crawlResult },
+    });
+  })
+);
+
+/**
+ * @swagger
+ * /api/crawls/{id}/broken-links:
+ *   get:
+ *     tags: [Crawls]
+ *     summary: Get broken links for a specific crawl
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Crawl ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number for pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *       - in: query
+ *         name: statusCode
+ *         schema:
+ *           type: integer
+ *         description: Filter by HTTP status code
+ *     responses:
+ *       200:
+ *         description: Broken links retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     brokenLinks:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     total:
+ *                       type: integer
+ *                     page:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Crawl not found
+ */
+
 // @route   GET /api/crawls/:id/broken-links
 // @desc    Get broken links for a specific crawl
 // @access  Private
@@ -450,49 +733,6 @@ router.post(
       data: {
         jobId: job.id,
       },
-    });
-  })
-);
-
-// @route   GET /api/crawls/:id
-// @desc    Get a specific crawl result
-// @access  Private
-router.get(
-  '/:id',
-  [param('id').isUUID().withMessage('Crawl ID must be a valid UUID')],
-  checkValidation,
-  asyncHandler(async (req, res) => {
-    const crawlResult = await CrawlResult.findOne({
-      where: {
-        id: req.params.id,
-        userId: req.user.id,
-      },
-      include: [
-        {
-          model: Website,
-          as: 'website',
-          attributes: ['id', 'name', 'url', 'category'],
-        },
-        {
-          model: BrokenLink,
-          as: 'brokenLinkRecords',
-          limit: 50,
-          order: [['createdAt', 'DESC']],
-        },
-      ],
-    });
-
-    if (!crawlResult) {
-      throw new AppError(
-        'Crawl result not found',
-        404,
-        'CRAWL_RESULT_NOT_FOUND'
-      );
-    }
-
-    res.json({
-      success: true,
-      data: { crawlResult },
     });
   })
 );
