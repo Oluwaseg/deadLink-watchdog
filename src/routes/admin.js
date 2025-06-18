@@ -5,6 +5,7 @@ const { QueueService } = require('../services/queue');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { Op } = require('sequelize');
+const sequelize = require('sequelize');
 
 const router = express.Router();
 const queueService = new QueueService();
@@ -49,10 +50,17 @@ const queueService = new QueueService();
 
 /**
  * @swagger
+ * tags:
+ *   name: Admin
+ *   description: Administrative endpoints for system management
+ */
+
+/**
+ * @swagger
  * /api/admin/stats:
  *   get:
- *     summary: Get system-wide statistics
  *     tags: [Admin]
+ *     summary: Get system-wide statistics
  *     security:
  *       - bearerAuth: []
  *     responses:
@@ -66,11 +74,28 @@ const queueService = new QueueService();
  *                 success:
  *                   type: boolean
  *                 data:
- *                   $ref: '#/components/schemas/Stats'
+ *                   type: object
+ *                   properties:
+ *                     totalUsers:
+ *                       type: integer
+ *                     totalWebsites:
+ *                       type: integer
+ *                     totalCrawls:
+ *                       type: integer
+ *                     totalBrokenLinks:
+ *                       type: integer
+ *                     activeWebsites:
+ *                       type: integer
+ *                     recentUsers:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     queueStats:
+ *                       type: object
  *       401:
- *         description: Unauthorized - Invalid or missing token
+ *         description: Unauthorized
  *       403:
- *         description: Forbidden - User is not an admin
+ *         description: Forbidden - Admin access required
  */
 router.use(authenticateToken);
 router.use(requireAdmin);
@@ -88,7 +113,7 @@ router.get(
       totalBrokenLinks,
       activeWebsites,
       recentUsers,
-      queueStats
+      queueStats,
     ] = await Promise.all([
       User.count(),
       Website.count(),
@@ -98,9 +123,9 @@ router.get(
       User.findAll({
         limit: 5,
         order: [['createdAt', 'DESC']],
-        attributes: ['id', 'email', 'name', 'createdAt']
+        attributes: ['id', 'email', 'firstName', 'lastName', 'createdAt'],
       }),
-      queueService.getQueueStats()
+      queueService.getQueueStats(),
     ]);
 
     res.json({
@@ -112,8 +137,8 @@ router.get(
         totalBrokenLinks,
         activeWebsites,
         recentUsers,
-        queueStats
-      }
+        queueStats,
+      },
     });
   })
 );
@@ -122,8 +147,8 @@ router.get(
  * @swagger
  * /api/admin/users:
  *   get:
- *     summary: Get all users with pagination and filtering
  *     tags: [Admin]
+ *     summary: Get all users with pagination and filtering
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -131,14 +156,13 @@ router.get(
  *         name: page
  *         schema:
  *           type: integer
- *           minimum: 1
- *         description: Page number
+ *           default: 1
+ *         description: Page number for pagination
  *       - in: query
  *         name: limit
  *         schema:
  *           type: integer
- *           minimum: 1
- *           maximum: 100
+ *           default: 20
  *         description: Number of items per page
  *       - in: query
  *         name: search
@@ -178,7 +202,9 @@ router.get(
  *                             type: string
  *                           email:
  *                             type: string
- *                           name:
+ *                           firstName:
+ *                             type: string
+ *                           lastName:
  *                             type: string
  *                           role:
  *                             type: string
@@ -198,6 +224,10 @@ router.get(
  *                           type: integer
  *                         pages:
  *                           type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
  */
 router.get(
   '/users',
@@ -206,31 +236,29 @@ router.get(
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('search').optional().trim(),
     query('role').optional().isIn(['user', 'admin']),
-    query('isActive').optional().isBoolean()
+    query('isActive').optional().isBoolean(),
   ],
   asyncHandler(async (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const { page = 1, limit = 20, search, role, isActive } = req.query;
     const offset = (page - 1) * limit;
-    
-    const whereClause = {};
-    if (req.query.search) {
-      whereClause[Op.or] = [
-        { email: { [Op.iLike]: `%${req.query.search}%` } },
-        { name: { [Op.iLike]: `%${req.query.search}%` } }
+
+    const where = {};
+    if (search) {
+      where[Op.or] = [
+        { email: { [Op.iLike]: `%${search}%` } },
+        { firstName: { [Op.iLike]: `%${search}%` } },
+        { lastName: { [Op.iLike]: `%${search}%` } }
       ];
     }
-    if (req.query.role) whereClause.role = req.query.role;
-    if (req.query.isActive !== undefined) {
-      whereClause.isActive = req.query.isActive === 'true';
-    }
+    if (role) where.role = role;
+    if (isActive !== undefined) where.isActive = isActive === 'true';
 
     const { count, rows: users } = await User.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-      attributes: { exclude: ['password'] }
+      where,
+      attributes: ['id', 'email', 'firstName', 'lastName', 'role', 'isActive', 'createdAt'],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['createdAt', 'DESC']]
     });
 
     res.json({
@@ -238,8 +266,8 @@ router.get(
       data: {
         users,
         pagination: {
-          page,
-          limit,
+          page: parseInt(page),
+          limit: parseInt(limit),
           total: count,
           pages: Math.ceil(count / limit)
         }
@@ -256,7 +284,7 @@ router.put(
   [param('id').isUUID()],
   asyncHandler(async (req, res) => {
     const user = await User.findByPk(req.params.id);
-    
+
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
@@ -269,8 +297,10 @@ router.put(
 
     res.json({
       success: true,
-      message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`,
-      data: { user }
+      message: `User ${
+        user.isActive ? 'activated' : 'deactivated'
+      } successfully`,
+      data: { user },
     });
   })
 );
@@ -333,17 +363,14 @@ router.put(
  */
 router.put(
   '/users/:id/role',
-  [
-    param('id').isUUID(),
-    query('role').isIn(['user', 'admin'])
-  ],
+  [param('id').isUUID(), query('role').isIn(['user', 'admin'])],
   asyncHandler(async (req, res) => {
     if (req.params.id === req.user.id) {
       throw new AppError('Cannot modify your own role', 403, 'FORBIDDEN');
     }
 
     const user = await User.findByPk(req.params.id);
-    
+
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
@@ -353,7 +380,7 @@ router.put(
     res.json({
       success: true,
       message: 'User role updated successfully',
-      data: { user }
+      data: { user },
     });
   })
 );
@@ -362,8 +389,8 @@ router.put(
  * @swagger
  * /api/admin/websites/moderation:
  *   get:
- *     summary: Get websites requiring moderation
  *     tags: [Admin]
+ *     summary: Get websites pending moderation
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -371,24 +398,17 @@ router.put(
  *         name: page
  *         schema:
  *           type: integer
- *           minimum: 1
- *         description: Page number
+ *           default: 1
+ *         description: Page number for pagination
  *       - in: query
  *         name: limit
  *         schema:
  *           type: integer
- *           minimum: 1
- *           maximum: 100
+ *           default: 20
  *         description: Number of items per page
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *           enum: [flagged, reported, blocked]
- *         description: Filter by website status
  *     responses:
  *       200:
- *         description: List of websites requiring moderation
+ *         description: List of websites pending moderation
  *         content:
  *           application/json:
  *             schema:
@@ -408,15 +428,21 @@ router.put(
  *                             type: string
  *                           url:
  *                             type: string
- *                           isActive:
- *                             type: boolean
- *                           isFlagged:
- *                             type: boolean
- *                           reports:
- *                             type: integer
- *                           createdAt:
+ *                           name:
  *                             type: string
- *                             format: date-time
+ *                           status:
+ *                             type: string
+ *                           user:
+ *                             type: object
+ *                             properties:
+ *                               id:
+ *                                 type: string
+ *                               email:
+ *                                 type: string
+ *                               firstName:
+ *                                 type: string
+ *                               lastName:
+ *                                 type: string
  *                     pagination:
  *                       type: object
  *                       properties:
@@ -428,13 +454,17 @@ router.put(
  *                           type: integer
  *                         pages:
  *                           type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
  */
 router.get(
   '/websites/moderation',
   [
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
-    query('status').optional().isIn(['flagged', 'reported', 'blocked'])
+    query('status').optional().isIn(['flagged', 'reported', 'blocked']),
   ],
   asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
@@ -442,10 +472,7 @@ router.get(
     const offset = (page - 1) * limit;
 
     const whereClause = {
-      [Op.or]: [
-        { isFlagged: true },
-        { reports: { [Op.gt]: 0 } }
-      ]
+      [Op.or]: [{ isFlagged: true }, { reports: { [Op.gt]: 0 } }],
     };
 
     if (req.query.status === 'blocked') {
@@ -456,14 +483,17 @@ router.get(
       where: whereClause,
       limit,
       offset,
-      order: [['reports', 'DESC'], ['createdAt', 'DESC']],
+      order: [
+        ['reports', 'DESC'],
+        ['createdAt', 'DESC'],
+      ],
       include: [
         {
           model: User,
           as: 'user',
-          attributes: ['id', 'email', 'name']
-        }
-      ]
+          attributes: ['id', 'email', 'firstName', 'lastName'],
+        },
+      ],
     });
 
     res.json({
@@ -474,9 +504,9 @@ router.get(
           page,
           limit,
           total: count,
-          pages: Math.ceil(count / limit)
-        }
-      }
+          pages: Math.ceil(count / limit),
+        },
+      },
     });
   })
 );
@@ -537,13 +567,10 @@ router.get(
  */
 router.put(
   '/websites/:id/moderate',
-  [
-    param('id').isUUID(),
-    query('action').isIn(['block', 'unblock'])
-  ],
+  [param('id').isUUID(), query('action').isIn(['block', 'unblock'])],
   asyncHandler(async (req, res) => {
     const website = await Website.findByPk(req.params.id);
-    
+
     if (!website) {
       throw new AppError('Website not found', 404, 'WEBSITE_NOT_FOUND');
     }
@@ -553,13 +580,13 @@ router.put(
       isFlagged: false,
       reports: 0,
       moderatedAt: new Date(),
-      moderatedBy: req.user.id
+      moderatedBy: req.user.id,
     });
 
     res.json({
       success: true,
       message: `Website ${req.query.action}ed successfully`,
-      data: { website }
+      data: { website },
     });
   })
 );
@@ -568,13 +595,13 @@ router.put(
  * @swagger
  * /api/admin/queue:
  *   get:
- *     summary: Get queue statistics and jobs
  *     tags: [Admin]
+ *     summary: Get queue statistics and active jobs
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Queue statistics and jobs retrieved successfully
+ *         description: Queue statistics retrieved successfully
  *         content:
  *           application/json:
  *             schema:
@@ -588,9 +615,7 @@ router.put(
  *                     stats:
  *                       type: object
  *                       properties:
- *                         totalJobs:
- *                           type: integer
- *                         pending:
+ *                         waiting:
  *                           type: integer
  *                         active:
  *                           type: integer
@@ -598,71 +623,26 @@ router.put(
  *                           type: integer
  *                         failed:
  *                           type: integer
- *                     jobs:
- *                       type: object
- *                       properties:
- *                         active:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               id:
- *                                 type: string
- *                               name:
- *                                 type: string
- *                               status:
- *                                 type: string
- *                               createdAt:
- *                                 type: string
- *                                 format: date-time
- *                         completed:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               id:
- *                                 type: string
- *                               name:
- *                                 type: string
- *                               status:
- *                                 type: string
- *                               createdAt:
- *                                 type: string
- *                                 format: date-time
- *                         failed:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               id:
- *                                 type: string
- *                               name:
- *                                 type: string
- *                               status:
- *                                 type: string
- *                               createdAt:
- *                                 type: string
- *                                 format: date-time
+ *                     activeJobs:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
  */
 router.get(
   '/queue',
   asyncHandler(async (req, res) => {
-    const [queueStats, activeJobs, completedJobs, failedJobs] = await Promise.all([
-      queueService.getQueueStats(),
-      queueService.getActiveJobs(),
-      queueService.getCompletedJobs(),
-      queueService.getFailedJobs()
-    ]);
+    const stats = await queueService.getQueueStats();
+    const activeJobs = await queueService.getActiveJobs();
 
     res.json({
       success: true,
       data: {
-        stats: queueStats,
-        jobs: {
-          active: activeJobs,
-          completed: completedJobs,
-          failed: failedJobs
-        }
+        stats,
+        activeJobs
       }
     });
   })
@@ -720,7 +700,7 @@ router.put(
 
     res.json({
       success: true,
-      message: 'User status updated successfully'
+      message: 'User status updated successfully',
     });
   })
 );
@@ -729,8 +709,8 @@ router.put(
  * @swagger
  * /api/admin/analytics/websites:
  *   get:
- *     summary: Get website analytics
  *     tags: [Admin]
+ *     summary: Get website analytics
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -738,9 +718,8 @@ router.put(
  *         name: period
  *         schema:
  *           type: integer
- *           minimum: 1
- *           maximum: 365
- *         description: Period in days to analyze
+ *           default: 30
+ *         description: Number of days to include in analytics
  *     responses:
  *       200:
  *         description: Website analytics retrieved successfully
@@ -756,59 +735,78 @@ router.put(
  *                   properties:
  *                     totalWebsites:
  *                       type: integer
- *                     newWebsites:
- *                       type: integer
  *                     activeWebsites:
  *                       type: integer
  *                     websitesByCategory:
  *                       type: object
- *                     crawlStats:
+ *                     websitesByStatus:
  *                       type: object
+ *                     newWebsites:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
  */
 router.get(
   '/analytics/websites',
   query('period').optional().isInt({ min: 1, max: 365 }),
   asyncHandler(async (req, res) => {
-    const period = parseInt(req.query.period) || 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - period);
+    try {
+      const period = parseInt(req.query.period) || 30;
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - period);
 
-    const [totalWebsites, newWebsites, websitesByCategory, crawlStats] = await Promise.all([
-      Website.count(),
-      Website.count({
-        where: {
-          createdAt: {
-            [Op.gte]: startDate
-          }
-        }
-      }),
-      Website.count({
-        group: ['category']
-      }),
-      CrawlResult.findAll({
-        where: {
-          createdAt: {
-            [Op.gte]: startDate
-          }
-        },
-        attributes: [
-          [db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'date'],
-          [db.sequelize.fn('COUNT', '*'), 'count']
-        ],
-        group: ['date'],
-        order: [[db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'ASC']]
-      })
-    ]);
-
-    res.json({
-      success: true,
-      data: {
+      const [
         totalWebsites,
-        newWebsites,
+        activeWebsites,
         websitesByCategory,
-        crawlStats
-      }
-    });
+        websitesByStatus,
+        newWebsites
+      ] = await Promise.all([
+        Website.count(),
+        Website.count({ where: { isActive: true } }),
+        Website.findAll({
+          attributes: ['category', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+          group: ['category']
+        }),
+        Website.findAll({
+          attributes: ['isActive', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+          group: ['isActive']
+        }),
+        Website.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate
+            }
+          },
+          order: [['createdAt', 'DESC']],
+          limit: 10
+        })
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          totalWebsites,
+          activeWebsites,
+          websitesByCategory: websitesByCategory.reduce((acc, curr) => {
+            acc[curr.category] = curr.get('count');
+            return acc;
+          }, {}),
+          websitesByStatus: websitesByStatus.reduce((acc, curr) => {
+            acc[curr.isActive ? 'active' : 'inactive'] = curr.get('count');
+            return acc;
+          }, {}),
+          newWebsites
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching website analytics:', error);
+      res.status(500).json({ success: false, message: 'Error fetching website analytics' });
+    }
   })
 );
 
@@ -816,8 +814,8 @@ router.get(
  * @swagger
  * /api/admin/analytics/users:
  *   get:
- *     summary: Get user analytics
  *     tags: [Admin]
+ *     summary: Get user analytics
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -825,9 +823,8 @@ router.get(
  *         name: period
  *         schema:
  *           type: integer
- *           minimum: 1
- *           maximum: 365
- *         description: Period in days to analyze
+ *           default: 30
+ *         description: Number of days to include in analytics
  *     responses:
  *       200:
  *         description: User analytics retrieved successfully
@@ -843,59 +840,68 @@ router.get(
  *                   properties:
  *                     totalUsers:
  *                       type: integer
- *                     newUsers:
- *                       type: integer
  *                     activeUsers:
  *                       type: integer
- *                     userStats:
+ *                     usersByRole:
  *                       type: object
+ *                     newUsers:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
  */
 router.get(
   '/analytics/users',
   query('period').optional().isInt({ min: 1, max: 365 }),
   asyncHandler(async (req, res) => {
-    const period = parseInt(req.query.period) || 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - period);
+    try {
+      const period = parseInt(req.query.period) || 30;
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - period);
 
-    const [totalUsers, newUsers, activeUsers, userStats] = await Promise.all([
-      User.count(),
-      User.count({
-        where: {
-          createdAt: {
-            [Op.gte]: startDate
-          }
-        }
-      }),
-      User.count({
-        where: {
-          isActive: true
-        }
-      }),
-      User.findAll({
-        where: {
-          createdAt: {
-            [Op.gte]: startDate
-          }
-        },
-        attributes: [
-          [db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'date'],
-          [db.sequelize.fn('COUNT', '*'), 'count']
-        ],
-        group: ['date'],
-        order: [[db.sequelize.fn('DATE', db.sequelize.col('createdAt')), 'ASC']]
-      })
-    ]);
-
-    res.json({
-      success: true,
-      data: {
+      const [
         totalUsers,
-        newUsers,
         activeUsers,
-        userStats
-      }
-    });
+        usersByRole,
+        newUsers
+      ] = await Promise.all([
+        User.count(),
+        User.count({ where: { isActive: true } }),
+        User.findAll({
+          attributes: ['role', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+          group: ['role']
+        }),
+        User.findAll({
+          where: {
+            createdAt: {
+              [Op.gte]: startDate
+            }
+          },
+          attributes: ['id', 'email', 'firstName', 'lastName', 'role', 'createdAt'],
+          order: [['createdAt', 'DESC']],
+          limit: 10
+        })
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          totalUsers,
+          activeUsers,
+          usersByRole: usersByRole.reduce((acc, curr) => {
+            acc[curr.role] = curr.get('count');
+            return acc;
+          }, {}),
+          newUsers
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching user analytics:', error);
+      res.status(500).json({ success: false, message: 'Error fetching user analytics' });
+    }
   })
 );
 

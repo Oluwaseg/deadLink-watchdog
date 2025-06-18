@@ -202,38 +202,43 @@ class QueueService {
 
   // Get queue statistics
   async getQueueStats() {
-    try {
-      const [crawlStats, notificationStats] = await Promise.all([
-        this.getQueueStatistics(this.crawlQueue),
-        this.getQueueStatistics(this.notificationQueue),
-      ]);
-
-      return {
-        crawl: crawlStats,
-        notification: notificationStats,
-      };
-    } catch (error) {
-      console.error('Failed to get queue stats:', error);
-      throw error;
-    }
-  }
-
-  async getQueueStatistics(queue) {
-    const [waiting, active, completed, failed, delayed] = await Promise.all([
-      queue.getWaiting(),
-      queue.getActive(),
-      queue.getCompleted(),
-      queue.getFailed(),
-      queue.getDelayed(),
+    const [crawlStats, notificationStats] = await Promise.all([
+      this.crawlQueue.getJobCounts(),
+      this.notificationQueue.getJobCounts(),
     ]);
 
     return {
-      waiting: waiting.length,
-      active: active.length,
-      completed: completed.length,
-      failed: failed.length,
-      delayed: delayed.length,
+      waiting: crawlStats.waiting + notificationStats.waiting,
+      active: crawlStats.active + notificationStats.active,
+      completed: crawlStats.completed + notificationStats.completed,
+      failed: crawlStats.failed + notificationStats.failed,
     };
+  }
+
+  async getActiveJobs() {
+    const [crawlJobs, notificationJobs] = await Promise.all([
+      this.crawlQueue.getActive(),
+      this.notificationQueue.getActive(),
+    ]);
+
+    return [
+      ...crawlJobs.map(job => ({
+        id: job.id,
+        name: job.name,
+        queue: 'crawl',
+        data: job.data,
+        progress: job.progress(),
+        timestamp: job.timestamp
+      })),
+      ...notificationJobs.map(job => ({
+        id: job.id,
+        name: job.name,
+        queue: 'notification',
+        data: job.data,
+        progress: job.progress(),
+        timestamp: job.timestamp
+      }))
+    ];
   }
 
   // Get job by ID
