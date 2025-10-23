@@ -334,7 +334,8 @@ class CrawlProcessor {
             await emailService.sendCrawlNotification(
               website.notificationEmail,
               website,
-              crawlResult
+              crawlResult,
+              user.firstName
             );
           } catch (notificationError) {
             console.error(

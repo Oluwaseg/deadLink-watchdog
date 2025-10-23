@@ -81,10 +81,10 @@ class EmailService {
     });
   }
 
-  async sendCrawlNotification(email, website, crawlResult) {
+  async sendCrawlNotification(email, website, crawlResult,firstName) {
     const templateId = process.env.BREVO_CRAWL_NOTIFICATION_TEMPLATE_ID;
 
-    return await this.sendTemplateEmail(templateId, email, website.userId, {
+    return await this.sendTemplateEmail(templateId, email, firstName, {
       WEBSITE_NAME: website.name,
       WEBSITE_URL: website.url,
       TOTAL_LINKS: crawlResult.totalLinksChecked,

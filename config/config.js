@@ -41,7 +41,13 @@ module.exports = {
     delay: parseInt(process.env.CRAWLER_DELAY) || 1000,
     timeout: parseInt(process.env.CRAWLER_TIMEOUT) || 30000,
     userAgent: process.env.CRAWLER_USER_AGENT || 'DeadLinkWatchdog/1.0',
-    maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CRAWLS) || 5
+    maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CRAWLS) || 5,
+    maxRetries: parseInt(process.env.CRAWLER_MAX_RETRIES) || 3,
+    retryDelay: parseInt(process.env.CRAWLER_RETRY_DELAY) || 1000,
+    circuitBreakerTimeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT) || 60000,
+    circuitBreakerThreshold: parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD) || 5,
+    cacheTimeout: parseInt(process.env.CRAWLER_CACHE_TIMEOUT) || 300000, // 5 minutes
+    rateLimitPerDomain: parseInt(process.env.RATE_LIMIT_PER_DOMAIN) || 2, // requests per second per domain
   },
 
   // Rate Limiting
