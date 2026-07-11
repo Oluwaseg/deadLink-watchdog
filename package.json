@@ -24,9 +24,9 @@
   "author": "DeadLink Watchdog Team",
   "license": "MIT",
   "dependencies": {
-    "@getbrevo/brevo": "^2.2.0",
     "axios": "^1.9.0",
     "bcryptjs": "^3.0.2",
+    "handlebars": "^4.7.7",
     "bull": "^4.16.5",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",

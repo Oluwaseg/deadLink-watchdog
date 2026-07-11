@@ -1,105 +1,196 @@
-const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const handlebars = require('handlebars');
+const nodemailer = require('nodemailer');
+const config = require('../../config/config');
 
 class EmailService {
   constructor() {
-    this.apiKey = process.env.BREVO_API_KEY;
-    this.fromEmail = process.env.FROM_EMAIL || 'noreply@deadlinkwatchdog.com';
-    this.fromName = process.env.FROM_NAME || 'DeadLink Watchdog';
-    this.apiUrl = 'https://api.brevo.com/v3';
+    this.fromEmail = config.email.from;
+    this.fromName = config.email.fromName || 'DeadLink Watchdog';
+    this.transport = null;
+    this.templates = {};
 
-    // Create axios instance with default headers
-    this.brevoClient = axios.create({
-      baseURL: this.apiUrl,
-      headers: {
-        'api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
+    this.initializeTransporter();
+    this.loadTemplates();
+  }
+
+  initializeTransporter() {
+    const emailConfig = config.email;
+    const env = process.env.NODE_ENV || 'development';
+
+    if (env === 'development') {
+      this.transport = nodemailer.createTransport({
+        host: process.env.MAILHOG_HOST || 'localhost',
+        port: Number(process.env.MAILHOG_PORT) || 1025,
+        secure: false,
+      });
+      console.log('Using MailHog transport for development email delivery');
+      return;
+    }
+
+    if (emailConfig.user && emailConfig.password) {
+      this.transport = nodemailer.createTransport({
+        host: emailConfig.host,
+        port: Number(emailConfig.port) || 587,
+        secure: Number(emailConfig.port) === 465,
+        auth: {
+          user: emailConfig.user,
+          pass: emailConfig.password,
+        },
+      });
+      return;
+    }
+
+    console.warn(
+      'Email transporter not configured - missing SMTP credentials for production'
+    );
+  }
+
+  loadTemplates() {
+    const templatesDir = path.join(__dirname, '../templates/email');
+    const templateFiles = [
+      'verification-email.hbs',
+      'password-reset-email.hbs',
+      'welcome-email.hbs',
+      'crawl-notification-email.hbs',
+    ];
+
+    templateFiles.forEach((fileName) => {
+      try {
+        const filePath = path.join(templatesDir, fileName);
+        const fileContents = fs.readFileSync(filePath, 'utf8');
+        const templateName = path.basename(fileName, '.hbs');
+        this.templates[templateName] = handlebars.compile(fileContents);
+      } catch (error) {
+        console.warn(
+          `Unable to load email template ${fileName}: ${error.message}`
+        );
+      }
     });
   }
 
-  async sendTemplateEmail(templateId, email, firstName, params = {}) {
-    if (!this.apiKey) {
-      console.warn('Brevo API key not configured, skipping email send');
-      return { success: false, message: 'Email service not configured' };
+  renderTemplate(templateName, context = {}) {
+    const template = this.templates[templateName];
+    if (!template) {
+      console.error(`Missing email template: ${templateName}`);
+      return '';
+    }
+    return template({
+      appName: this.fromName,
+      ...context,
+    });
+  }
+
+  stripHtml(html) {
+    return html
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  async sendMail({ to, subject, templateName, context = {} }) {
+    if (!this.transport) {
+      console.warn('Email transport is not configured');
+      return { success: false, message: 'Email transport is not configured' };
     }
 
-    if (!templateId) {
-      console.error('Template ID is required');
-      return { success: false, message: 'Template ID is required' };
+    const html = this.renderTemplate(templateName, context);
+    if (!html) {
+      return { success: false, message: 'Email template rendering failed' };
     }
+
+    const mailOptions = {
+      from: `${this.fromName} <${this.fromEmail}>`,
+      to,
+      subject,
+      html,
+      text: this.stripHtml(html),
+    };
 
     try {
-      const emailData = {
-        to: [{ email, name: firstName }],
-        templateId: parseInt(templateId),
-        params: {
-          FIRSTNAME: firstName,
-          APP_NAME: 'DeadLink Watchdog',
-          ...params,
-        },
-        sender: {
-          name: this.fromName,
-          email: this.fromEmail,
-        },
+      const result = await this.transport.sendMail(mailOptions);
+      return {
+        success: true,
+        messageId: result.messageId,
       };
-
-      console.log(`📧 Sending template ${templateId} to ${email}`);
-
-      const response = await this.brevoClient.post('/smtp/email', emailData);
-
-      console.log(`✅ Email sent successfully to ${email}`);
-      return { success: true, messageId: response.data.messageId };
     } catch (error) {
-      console.error(
-        'Failed to send email:',
-        error.response?.data || error.message
-      );
+      console.error('Failed to send email:', error);
       return {
         success: false,
-        error: error.response?.data?.message || error.message,
+        error: error.message,
       };
     }
   }
 
   async sendVerificationEmail(email, verificationCode, firstName) {
-    const templateId = process.env.BREVO_VERIFICATION_TEMPLATE_ID;
-    return await this.sendTemplateEmail(templateId, email, firstName, {
-      VERIFICATION_CODE: verificationCode,
-      EXPIRY_HOURS: '24',
+    return this.sendMail({
+      to: email,
+      subject: `Verify your email for ${this.fromName}`,
+      templateName: 'verification-email',
+      context: {
+        firstName: firstName || 'there',
+        verificationCode,
+        expiryHours: '24',
+      },
     });
   }
 
   async sendPasswordResetEmail(email, resetToken, firstName) {
-    const templateId = process.env.BREVO_PASSWORD_RESET_TEMPLATE_ID;
-    const resetUrl = `${
-      process.env.FRONTEND_URL || 'http://localhost:3000'
-    }/reset-password?token=${resetToken}`;
-
-    return await this.sendTemplateEmail(templateId, email, firstName, {
-      RESET_URL: resetUrl,
-      EXPIRY_HOURS: '1',
-    });
-  }
-
-  async sendCrawlNotification(email, website, crawlResult,firstName) {
-    const templateId = process.env.BREVO_CRAWL_NOTIFICATION_TEMPLATE_ID;
-
-    return await this.sendTemplateEmail(templateId, email, firstName, {
-      WEBSITE_NAME: website.name,
-      WEBSITE_URL: website.url,
-      TOTAL_LINKS: crawlResult.totalLinksChecked,
-      BROKEN_LINKS: crawlResult.brokenLinksFound,
-      HEALTH_SCORE: website.healthScore,
-      STATUS_MESSAGE:
-        crawlResult.brokenLinksFound > 0
-          ? `⚠️ Action Required: ${crawlResult.brokenLinksFound} broken links found`
-          : '✅ Great News: No broken links found',
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+    return this.sendMail({
+      to: email,
+      subject: `Reset your ${this.fromName} password`,
+      templateName: 'password-reset-email',
+      context: {
+        firstName: firstName || 'there',
+        resetUrl,
+        expiryHours: '1',
+      },
     });
   }
 
   async sendWelcomeEmail(email, firstName) {
-    const templateId = process.env.BREVO_WELCOME_TEMPLATE_ID;
-    return await this.sendTemplateEmail(templateId, email, firstName);
+    return this.sendMail({
+      to: email,
+      subject: `Welcome to ${this.fromName}`,
+      templateName: 'welcome-email',
+      context: {
+        firstName: firstName || 'there',
+      },
+    });
+  }
+
+  async sendCrawlNotification(
+    email,
+    website,
+    crawlResult,
+    firstName,
+    brokenLinks = []
+  ) {
+    const healthScore = Number(website.healthScore ?? 0);
+    return this.sendMail({
+      to: email,
+      subject:
+        crawlResult.brokenLinksFound > 0
+          ? `🚨 ${crawlResult.brokenLinksFound} Broken Links Found on ${website.name}`
+          : `✅ Crawl Report for ${website.name}`,
+      templateName: 'crawl-notification-email',
+      context: {
+        firstName: firstName || 'there',
+        websiteName: website.name,
+        websiteUrl: website.url,
+        crawlDate: crawlResult.completedAt || new Date(),
+        totalLinksChecked: crawlResult.totalLinksChecked,
+        brokenLinksFound: crawlResult.brokenLinksFound,
+        healthScore,
+        statusMessage:
+          crawlResult.brokenLinksFound > 0
+            ? `Action required: ${crawlResult.brokenLinksFound} broken links were found.`
+            : 'Great news! No broken links were found during this crawl.',
+        brokenLinks,
+      },
+    });
   }
 }
 
