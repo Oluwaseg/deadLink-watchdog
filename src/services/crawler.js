@@ -15,6 +15,8 @@ class WebCrawler {
     this.circuitBreakerThreshold = config.crawler.circuitBreakerThreshold;
     this.cacheTimeout = config.crawler.cacheTimeout;
     this.rateLimitPerDomain = config.crawler.rateLimitPerDomain;
+    this.maxLinksPerSite = config.crawler.maxLinksPerSite;
+    this.fastMode = config.crawler.fastMode;
     this.circuitBreakers = new Map(); // Track circuit breaker state per domain
     this.requestCache = new Map(); // Simple in-memory cache for recent requests
     this.domainRateLimiters = new Map(); // Track rate limiting per domain
@@ -67,29 +69,128 @@ class WebCrawler {
 
       console.log(`Successfully loaded page: ${url}`);
 
-      // Extract all links from the page
+      // Extract all links from the page (enhanced extraction)
       const pageLinks = await page.evaluate(() => {
+        const links = [];
+        
+        // 1. Extract anchor links
         const anchors = Array.from(document.querySelectorAll('a[href]'));
-        return anchors.map((anchor) => ({
-          url: anchor.href,
-          text: anchor.textContent.trim(),
-          sourceUrl: window.location.href,
-        }));
+        anchors.forEach((anchor) => {
+          links.push({
+            url: anchor.href,
+            text: anchor.textContent.trim(),
+            sourceUrl: window.location.href,
+            type: 'anchor',
+            element: 'a'
+          });
+        });
+        
+        // 2. Extract image src attributes
+        const images = Array.from(document.querySelectorAll('img[src]'));
+        images.forEach((img) => {
+          links.push({
+            url: img.src,
+            text: img.alt || img.title || 'image',
+            sourceUrl: window.location.href,
+            type: 'image',
+            element: 'img'
+          });
+        });
+        
+        // 3. Extract CSS background-image URLs
+        const elementsWithBg = Array.from(document.querySelectorAll('*'));
+        elementsWithBg.forEach((element) => {
+          const style = window.getComputedStyle(element);
+          const bgImage = style.backgroundImage;
+          if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
+            const urlMatch = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+            if (urlMatch && urlMatch[1]) {
+              let url = urlMatch[1];
+              // Convert relative URLs to absolute
+              if (url.startsWith('/')) {
+                url = window.location.origin + url;
+              } else if (!url.startsWith('http')) {
+                url = new URL(url, window.location.href).href;
+              }
+              
+              links.push({
+                url: url,
+                text: `background-image in ${element.tagName.toLowerCase()}`,
+                sourceUrl: window.location.href,
+                type: 'background-image',
+                element: element.tagName.toLowerCase()
+              });
+            }
+          }
+        });
+        
+        // 4. Extract form action URLs
+        const forms = Array.from(document.querySelectorAll('form[action]'));
+        forms.forEach((form) => {
+          links.push({
+            url: form.action,
+            text: `form action in ${form.tagName.toLowerCase()}`,
+            sourceUrl: window.location.href,
+            type: 'form-action',
+            element: 'form'
+          });
+        });
+        
+        // 5. Extract link elements (CSS, favicon, etc.)
+        const linkElements = Array.from(document.querySelectorAll('link[href]'));
+        linkElements.forEach((link) => {
+          links.push({
+            url: link.href,
+            text: link.rel || 'link element',
+            sourceUrl: window.location.href,
+            type: 'link-element',
+            element: 'link'
+          });
+        });
+        
+        // 6. Extract script src attributes
+        const scripts = Array.from(document.querySelectorAll('script[src]'));
+        scripts.forEach((script) => {
+          links.push({
+            url: script.src,
+            text: 'script source',
+            sourceUrl: window.location.href,
+            type: 'script',
+            element: 'script'
+          });
+        });
+        
+        return links;
       });
 
       console.log(`Found ${pageLinks.length} links on page: ${url}`);
 
-      // Process each link
+      // Process each link with smart filtering
+      let processedCount = 0;
       for (const link of pageLinks) {
+        // Limit links per site in fast mode
+        if (this.fastMode && processedCount >= this.maxLinksPerSite) {
+          console.log(`Fast mode: Limiting to ${this.maxLinksPerSite} links per site`);
+          break;
+        }
+        
         try {
           const linkUrl = new URL(link.url);
           // Only include http/https links
           if (linkUrl.protocol === 'http:' || linkUrl.protocol === 'https:') {
+            // Skip certain link types in fast mode
+            if (this.fastMode && this.shouldSkipInFastMode(link)) {
+              continue;
+            }
+            
             links.add({
               url: link.url,
               text: link.text,
               sourceUrl: link.sourceUrl,
+              type: link.type,
+              element: link.element,
             });
+            processedCount++;
           }
         } catch (error) {
           // Invalid URL, skip it
@@ -140,11 +241,12 @@ class WebCrawler {
     };
   }
 
-  async checkLink(url, sourceUrl = null, retryCount = 0) {
+  async checkLink(url, sourceUrl = null, retryCount = 0, linkType = 'anchor') {
     const startTime = Date.now();
     const result = {
       url,
       sourceUrl,
+      linkType,
       status: 'unknown',
       statusCode: null,
       responseTime: 0,
@@ -180,26 +282,42 @@ class WebCrawler {
     }
 
     try {
-      // Use more realistic browser headers for better compatibility
-      const response = await axios.get(url, {
+      // Use appropriate headers based on link type
+      const headers = {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'max-age=0',
+      };
+
+      // Set appropriate Accept header based on link type
+      if (linkType === 'image') {
+        headers.Accept = 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+      } else if (linkType === 'script') {
+        headers.Accept = '*/*';
+      } else if (linkType === 'link-element') {
+        headers.Accept = 'text/css,*/*;q=0.1';
+      } else {
+        headers.Accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8';
+        headers['Upgrade-Insecure-Requests'] = '1';
+        headers['Sec-Fetch-Dest'] = 'document';
+        headers['Sec-Fetch-Mode'] = 'navigate';
+        headers['Sec-Fetch-Site'] = 'none';
+      }
+
+      // Use HEAD request for images and scripts to be more efficient
+      const method = (linkType === 'image' || linkType === 'script') ? 'head' : 'get';
+      
+      const response = await axios({
+        method,
+        url,
         timeout: this.timeout,
         maxRedirects: 5,
         validateStatus: () => true, // Don't throw on 4xx/5xx
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate, br',
-          DNT: '1',
-          Connection: 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Cache-Control': 'max-age=0',
-        },
+        headers,
       });
 
       result.statusCode = response.status;
@@ -487,7 +605,7 @@ class WebCrawler {
             await this.enforceRateLimit(domain);
           }
 
-          const result = await this.checkLink(link.url, link.sourceUrl);
+          const result = await this.checkLink(link.url, link.sourceUrl, 0, link.type);
           result.linkText = link.text;
           
           if (onProgress) {
@@ -548,8 +666,13 @@ class WebCrawler {
     }
   }
 
-  // Enhanced rate limiting per domain
+  // Enhanced rate limiting per domain with fast mode optimization
   async enforceRateLimit(domain) {
+    // Skip rate limiting in fast mode for better performance
+    if (this.fastMode) {
+      return;
+    }
+    
     const now = Date.now();
     const rateLimiter = this.domainRateLimiters.get(domain);
     
@@ -584,6 +707,27 @@ class WebCrawler {
     if (now - rateLimiter.lastCleanup > 60000) { // 1 minute
       this.cleanupRateLimiters();
     }
+  }
+
+  // Determine if link should be skipped in fast mode
+  shouldSkipInFastMode(link) {
+    // Skip certain link types in fast mode for speed
+    const skipTypes = ['script', 'link-element', 'background-image'];
+    if (skipTypes.includes(link.type)) {
+      return true;
+    }
+    
+    // Skip image links with very long URLs (likely dynamic)
+    if (link.type === 'image' && link.url.length > 200) {
+      return true;
+    }
+    
+    // Skip anchor links to same page
+    if (link.type === 'anchor' && link.url.includes('#')) {
+      return true;
+    }
+    
+    return false;
   }
 
   // Clean up old rate limiters

@@ -38,16 +38,18 @@ module.exports = {
 
   // Crawler Configuration
   crawler: {
-    delay: parseInt(process.env.CRAWLER_DELAY) || 1000,
-    timeout: parseInt(process.env.CRAWLER_TIMEOUT) || 30000,
+    delay: parseInt(process.env.CRAWLER_DELAY) || 200, // Reduced from 1000ms
+    timeout: parseInt(process.env.CRAWLER_TIMEOUT) || 10000, // Reduced from 30000ms
     userAgent: process.env.CRAWLER_USER_AGENT || 'DeadLinkWatchdog/1.0',
-    maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CRAWLS) || 5,
-    maxRetries: parseInt(process.env.CRAWLER_MAX_RETRIES) || 3,
-    retryDelay: parseInt(process.env.CRAWLER_RETRY_DELAY) || 1000,
-    circuitBreakerTimeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT) || 60000,
-    circuitBreakerThreshold: parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD) || 5,
+    maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CRAWLS) || 10, // Increased from 5
+    maxRetries: parseInt(process.env.CRAWLER_MAX_RETRIES) || 2, // Reduced from 3
+    retryDelay: parseInt(process.env.CRAWLER_RETRY_DELAY) || 500, // Reduced from 1000ms
+    circuitBreakerTimeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT) || 30000, // Reduced from 60000ms
+    circuitBreakerThreshold: parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD) || 3, // Reduced from 5
     cacheTimeout: parseInt(process.env.CRAWLER_CACHE_TIMEOUT) || 300000, // 5 minutes
-    rateLimitPerDomain: parseInt(process.env.RATE_LIMIT_PER_DOMAIN) || 2, // requests per second per domain
+    rateLimitPerDomain: parseInt(process.env.RATE_LIMIT_PER_DOMAIN) || 5, // Increased from 2
+    maxLinksPerSite: parseInt(process.env.MAX_LINKS_PER_SITE) || 100, // Limit links per site
+    fastMode: process.env.CRAWLER_FAST_MODE === 'true' || false, // Fast mode for bulk crawling
   },
 
   // Rate Limiting
