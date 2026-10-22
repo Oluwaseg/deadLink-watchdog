@@ -1,6 +1,9 @@
 {
   "name": "deadlink-watchdog",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "description": "API that monitors broken links in Nigerian websites",
   "main": "src/app.js",
   "scripts": {
@@ -42,9 +45,9 @@
     "jsonwebtoken": "9.0.3",
     "morgan": "1.12.1",
     "node-cron": "4.6.0",
-    "nodemailer": "7.0.13",
+    "nodemailer": "10.0.9",
     "pg": "8.23.1",
-    "puppeteer": "24.43.1",
+    "puppeteer": "25.16.0",
     "redis": "5.12.1",
     "swagger-jsdoc": "6.3.0",
     "swagger-ui-express": "5.0.1",
