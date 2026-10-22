@@ -7,7 +7,6 @@
 
 const { execSync } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 
 async function checkPrerequisites() {
   console.log('🔍 Checking prerequisites...\n');
@@ -46,16 +45,20 @@ async function setupDatabase() {
   console.log('🗄️  Setting up database...\n');
 
   try {
-    // Run migrations
-    console.log('Running database migrations...');
-    execSync('npm run db:migrate', { stdio: 'inherit' });
-    console.log('✅ Database migrations completed');
+    console.log('Generating Prisma client...');
+    execSync('prisma generate', {
+      stdio: 'inherit',
+    });
 
+    console.log('Applying Prisma migrations...');
+    execSync('prisma migrate deploy', {
+      stdio: 'inherit',
+    });
     console.log('✅ Database setup completed');
   } catch (error) {
     console.error('❌ Database setup failed:', error.message);
     console.log(
-      '\n💡 Make sure PostgreSQL is running and credentials in .env are correct'
+      '\n💡 Make sure PostgreSQL is running and DATABASE_URL in .env is correct'
     );
     process.exit(1);
   }
@@ -65,7 +68,6 @@ async function startServer() {
   console.log('🚀 Starting DeadLink Watchdog server...\n');
 
   try {
-    // Import and start the app
     const app = require('./src/app');
     await app.start();
   } catch (error) {
@@ -73,8 +75,11 @@ async function startServer() {
 
     if (error.message.includes('Redis')) {
       console.log('💡 Make sure Redis is running on the configured port');
-    } else if (error.message.includes('database')) {
-      console.log('💡 Check your database configuration in .env');
+    } else if (
+      error.message.includes('database') ||
+      error.message.includes('Prisma')
+    ) {
+      console.log('💡 Check your DATABASE_URL configuration in .env');
     }
 
     process.exit(1);
@@ -91,17 +96,7 @@ async function main() {
 
   try {
     await checkPrerequisites();
-
-    // Check if this is first run (no migrations exist)
-    const migrationsPath = path.join(__dirname, 'database', 'migrations');
-    const migrationFiles = fs.readdirSync(migrationsPath);
-
-    if (migrationFiles.length > 0) {
-      await setupDatabase();
-    } else {
-      console.log('⚠️  No migration files found. Skipping database setup.');
-    }
-
+    await setupDatabase();
     await startServer();
   } catch (error) {
     console.error('❌ Startup failed:', error.message);
@@ -109,7 +104,6 @@ async function main() {
   }
 }
 
-// Handle graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n👋 Shutting down gracefully...');
   process.exit(0);
@@ -120,7 +114,6 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-// Run the startup script
 if (require.main === module) {
   main().catch(console.error);
 }

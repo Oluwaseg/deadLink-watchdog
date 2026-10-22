@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+enum WebsiteCategory {
+  news
+  government
+  business
+  education
+  entertainment
+  financial
+  other
+}
+
+enum CrawlFrequency {
+  daily
+  weekly
+  monthly
+}
+
+enum CrawlStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+enum ErrorType {
+  e404_not_found    @map("404_not_found")
+  e403_forbidden    @map("403_forbidden")
+  e500_server_error @map("500_server_error")
+  timeout
+  connection_refused
+  dns_error
+  ssl_error
+  redirect_loop
+  too_many_redirects
+  other
+}
+
+model User {
+  id                        String    @id @default(uuid()) @db.Uuid
+  email                     String    @unique
+  password                  String
+  firstName                 String
+  lastName                  String
+  role                      UserRole  @default(user)
+  isActive                  Boolean   @default(true)
+  emailVerified             Boolean   @default(false)
+  emailVerificationCode     String?
+  emailVerificationExpires  DateTime?
+  lastLoginAt               DateTime?
+  resetPasswordToken        String?
+  resetPasswordExpires      DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  websites     Website[]     @relation("UserWebsites")
+  crawlResults CrawlResult[] @relation("UserCrawlResults")
+  moderatedWebsites Website[] @relation("WebsiteModerator")
+
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+model Website {
+  id                String           @id @default(uuid()) @db.Uuid
+  url               String
+  name              String
+  description       String?
+  category          WebsiteCategory  @default(other)
+  isActive          Boolean          @default(true)
+  crawlFrequency    CrawlFrequency?
+  lastCrawledAt     DateTime?
+  nextCrawlAt       DateTime?
+  totalLinks        Int              @default(0)
+  brokenLinks       Int              @default(0)
+  healthScore       Float            @default(100)
+  notificationEmail String?
+  webhookUrl        String?
+  isFlagged         Boolean          @default(false)
+  reports           Int              @default(0)
+  moderatedAt       DateTime?
+  moderatedBy       String?          @db.Uuid
+  userId            String           @db.Uuid
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  user              User             @relation("UserWebsites", fields: [userId], references: [id], onDelete: Cascade)
+  moderator         User?            @relation("WebsiteModerator", fields: [moderatedBy], references: [id], onDelete: SetNull)
+  crawlResults      CrawlResult[]
+  brokenLinkRecords BrokenLink[]
+
+  @@index([userId])
+  @@index([isActive])
+  @@index([nextCrawlAt])
+  @@index([category])
+  @@map("websites")
+}
+
+model CrawlResult {
+  id                  String      @id @default(uuid()) @db.Uuid
+  websiteId           String      @db.Uuid
+  userId              String      @db.Uuid
+  status              CrawlStatus @default(pending)
+  startedAt           DateTime?
+  completedAt         DateTime?
+  totalLinksFound     Int         @default(0)
+  totalLinksChecked   Int         @default(0)
+  brokenLinksFound    Int         @default(0)
+  redirectsFound      Int         @default(0)
+  timeoutsFound       Int         @default(0)
+  averageResponseTime Int         @default(0)
+  errorMessage        String?
+  crawlDepth          Int         @default(1)
+  userAgent           String?
+  summary             Json        @default("{}")
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  website           Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  user              User         @relation("UserCrawlResults", fields: [userId], references: [id], onDelete: Cascade)
+  brokenLinkRecords BrokenLink[]
+
+  @@index([websiteId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("crawl_results")
+}
+
+model BrokenLink {
+  id              String    @id @default(uuid()) @db.Uuid
+  websiteId       String    @db.Uuid
+  crawlResultId   String    @db.Uuid
+  url             String
+  sourceUrl       String
+  linkText        String?
+  statusCode      Int?
+  errorType       ErrorType
+  errorMessage    String?
+  responseTime    Int?
+  redirectChain   Json      @default("[]")
+  isFixed         Boolean   @default(false)
+  fixedAt         DateTime?
+  firstDetectedAt DateTime  @default(now())
+  lastCheckedAt   DateTime  @default(now())
+  checkCount      Int       @default(1)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  website     Website     @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  crawlResult CrawlResult @relation(fields: [crawlResultId], references: [id], onDelete: Cascade)
+
+  @@index([websiteId])
+  @@index([crawlResultId])
+  @@index([errorType])
+  @@index([isFixed])
+  @@map("broken_links")
+}

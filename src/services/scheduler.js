@@ -1,6 +1,5 @@
 const cron = require('node-cron');
-const { Website } = require('../models');
-const { Op } = require('sequelize');
+const prisma = require('../lib/prisma');
 
 class SchedulerService {
   constructor(queueService) {
@@ -86,20 +85,20 @@ class SchedulerService {
       console.log('Checking for websites that need crawling...');
 
       // Find websites that need to be crawled (only those with automatic crawling enabled)
-      const websitesToCrawl = await Website.findAll({
+      const websitesToCrawl = await prisma.website.findMany({
         where: {
           isActive: true,
-          crawlFrequency: { [Op.ne]: null }, // Only websites with crawl frequency set
-          nextCrawlAt: { [Op.lte]: new Date() }, // Only websites whose next crawl time has passed
+          crawlFrequency: { not: null },
+          nextCrawlAt: { lte: new Date() },
         },
-        attributes: [
-          'id',
-          'userId',
-          'name',
-          'url',
-          'crawlFrequency',
-          'nextCrawlAt',
-        ],
+        select: {
+          id: true,
+          userId: true,
+          name: true,
+          url: true,
+          crawlFrequency: true,
+          nextCrawlAt: true,
+        },
       });
 
       console.log(
@@ -119,7 +118,10 @@ class SchedulerService {
           const nextCrawlAt = this.calculateNextCrawlTime(
             website.crawlFrequency
           );
-          await website.update({ nextCrawlAt });
+          await prisma.website.update({
+            where: { id: website.id },
+            data: { nextCrawlAt },
+          });
 
           console.log(
             `Scheduled crawl for website ${website.name} (${website.id})`
@@ -190,12 +192,12 @@ class SchedulerService {
       const staleCrawlThreshold = new Date();
       staleCrawlThreshold.setDate(staleCrawlThreshold.getDate() - 30); // 30 days
 
-      const staleWebsites = await Website.count({
+      const staleWebsites = await prisma.website.count({
         where: {
           isActive: true,
-          [Op.or]: [
+          OR: [
             { lastCrawledAt: null },
-            { lastCrawledAt: { [Op.lt]: staleCrawlThreshold } },
+            { lastCrawledAt: { lt: staleCrawlThreshold } },
           ],
         },
       });

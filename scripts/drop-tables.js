@@ -1,66 +1,39 @@
-// scripts/drop-tables.js
-const { Sequelize } = require('sequelize');
-const config =
-  require('../config/database')[process.env.NODE_ENV || 'development'];
+const prisma = require('../src/lib/prisma');
 
 async function dropAll() {
-  const sequelize = new Sequelize(
-    config.database,
-    config.username,
-    config.password,
-    config
-  );
-
   try {
-    await sequelize.authenticate();
+    await prisma.$connect();
     console.log('🔗 Connected to database');
 
     const drop = async (sql, msg) => {
-      await sequelize.query(sql);
+      await prisma.$executeRawUnsafe(sql);
       console.log(msg);
     };
 
     await drop(
-      'DROP TABLE IF EXISTS broken_links CASCADE;',
-      '🗑️ Dropped broken_links'
-    );
-    await drop(
-      'DROP TABLE IF EXISTS crawl_results CASCADE;',
-      '🗑️ Dropped crawl_results'
-    );
-    await drop('DROP TABLE IF EXISTS websites CASCADE;', '🗑️ Dropped websites');
-    await drop('DROP TABLE IF EXISTS users CASCADE;', '🗑️ Dropped users');
-    await drop(
-      'DROP TABLE IF EXISTS "SequelizeMeta" CASCADE;',
-      '🗑️ Dropped SequelizeMeta'
-    );
-
-    await drop(
-      'DROP TYPE IF EXISTS enum_users_role CASCADE;',
-      '🧹 Dropped enum_users_role'
-    );
-    await drop(
-      'DROP TYPE IF EXISTS enum_websites_category CASCADE;',
-      '🧹 Dropped enum_websites_category'
-    );
-    await drop(
-      'DROP TYPE IF EXISTS enum_websites_crawlFrequency CASCADE;',
-      '🧹 Dropped enum_websites_crawlFrequency'
-    );
-    await drop(
-      'DROP TYPE IF EXISTS enum_crawl_results_status CASCADE;',
-      '🧹 Dropped enum_crawl_results_status'
-    );
-    await drop(
-      'DROP TYPE IF EXISTS enum_broken_links_errorType CASCADE;',
-      '🧹 Dropped enum_broken_links_errorType'
+      `DO $$ DECLARE r RECORD;
+       BEGIN
+         FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+           EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+         END LOOP;
+         FOR r IN (
+           SELECT t.typname
+           FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+           WHERE n.nspname = 'public' AND t.typtype = 'e'
+         ) LOOP
+           EXECUTE 'DROP TYPE IF EXISTS public.' || quote_ident(r.typname) || ' CASCADE';
+         END LOOP;
+       END $$;`,
+      '🗑️ Dropped all public tables and enum types'
     );
 
     console.log('✅ All tables and enums dropped successfully!');
-    await sequelize.close();
   } catch (error) {
     console.error('❌ Error:', error.message);
     process.exit(1);
+  } finally {
+    await prisma.$disconnect();
   }
 }
 

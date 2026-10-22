@@ -1,8 +1,9 @@
 const { crawlQueue } = require('../services/queue');
-const { Website, CrawlResult, BrokenLink } = require('../models');
+const prisma = require('../lib/prisma');
 const WebCrawler = require('../services/crawler');
 const emailService = require('../services/email');
 const config = require('../../config/config');
+const { toPrismaErrorType } = require('../utils/errorType');
 
 class CrawlProcessor {
   constructor() {
@@ -198,7 +199,9 @@ class CrawlProcessor {
 
     try {
       // Get website details
-      const website = await Website.findByPk(websiteId);
+      const website = await prisma.website.findUnique({
+        where: { id: websiteId },
+      });
       if (!website) {
         throw new Error(`Website ${websiteId} not found`);
       }
@@ -208,11 +211,27 @@ class CrawlProcessor {
       }
 
       // Check if a crawl result already exists for this job
-      const existingCrawlResult = await CrawlResult.findOne({
-        where: {
-          'summary.jobId': job.id,
-        },
-      });
+      let existingCrawlResult = null;
+      try {
+        existingCrawlResult = await prisma.crawlResult.findFirst({
+          where: {
+            summary: {
+              path: ['jobId'],
+              equals: job.id,
+            },
+          },
+        });
+      } catch (jsonFilterError) {
+        // Fallback: load recent results and filter in JS
+        const recentResults = await prisma.crawlResult.findMany({
+          where: { websiteId },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        });
+        existingCrawlResult = recentResults.find(
+          (r) => r.summary && r.summary.jobId === job.id
+        );
+      }
 
       if (existingCrawlResult) {
         console.log(
@@ -226,16 +245,18 @@ class CrawlProcessor {
       }
 
       // Create crawl result record
-      const crawlResult = await CrawlResult.create({
-        websiteId,
-        userId,
-        status: 'running',
-        startedAt: new Date(),
-        crawlDepth,
-        userAgent: config.crawler.userAgent,
-        summary: {
-          scheduledBy,
-          jobId: job.id,
+      let crawlResult = await prisma.crawlResult.create({
+        data: {
+          websiteId,
+          userId,
+          status: 'running',
+          startedAt: new Date(),
+          crawlDepth,
+          userAgent: config.crawler.userAgent,
+          summary: {
+            scheduledBy,
+            jobId: job.id,
+          },
         },
       });
 
@@ -281,19 +302,22 @@ class CrawlProcessor {
         }
 
         // Update crawl result with data
-        await crawlResult.update({
-          status: 'completed',
-          completedAt: new Date(),
-          totalLinksFound: crawlData.totalLinksFound,
-          totalLinksChecked: crawlData.totalLinksChecked,
-          brokenLinksFound: crawlData.brokenLinksFound,
-          redirectsFound: crawlData.redirectsFound,
-          timeoutsFound: crawlData.timeoutsFound,
-          averageResponseTime: crawlData.averageResponseTime,
-          summary: {
-            ...crawlResult.summary,
-            crawlDuration: crawlData.endTime - crawlData.startTime,
-            errors: crawlData.errors,
+        crawlResult = await prisma.crawlResult.update({
+          where: { id: crawlResult.id },
+          data: {
+            status: 'completed',
+            completedAt: new Date(),
+            totalLinksFound: crawlData.totalLinksFound,
+            totalLinksChecked: crawlData.totalLinksChecked,
+            brokenLinksFound: crawlData.brokenLinksFound,
+            redirectsFound: crawlData.redirectsFound,
+            timeoutsFound: crawlData.timeoutsFound,
+            averageResponseTime: crawlData.averageResponseTime,
+            summary: {
+              ...(crawlResult.summary || {}),
+              crawlDuration: crawlData.endTime - crawlData.startTime,
+              errors: crawlData.errors,
+            },
           },
         });
 
@@ -306,13 +330,13 @@ class CrawlProcessor {
             sourceUrl: link.sourceUrl,
             linkText: link.linkText,
             statusCode: link.statusCode,
-            errorType: link.errorType,
+            errorType: toPrismaErrorType(link.errorType),
             errorMessage: link.errorMessage,
             responseTime: link.responseTime,
             redirectChain: link.redirectChain || [],
           }));
 
-          await BrokenLink.bulkCreate(brokenLinksData);
+          await prisma.brokenLink.createMany({ data: brokenLinksData });
         }
 
         // Update website statistics
@@ -331,11 +355,15 @@ class CrawlProcessor {
             console.log(
               `📧 Sending crawl notification to ${website.notificationEmail}`
             );
+            const user = await prisma.user.findUnique({
+              where: { id: userId },
+              select: { firstName: true },
+            });
             await emailService.sendCrawlNotification(
               website.notificationEmail,
               website,
               crawlResult,
-              user.firstName
+              user?.firstName || ''
             );
           } catch (notificationError) {
             console.error(
@@ -379,10 +407,13 @@ class CrawlProcessor {
         };
       } catch (crawlError) {
         // Update crawl result as failed
-        await crawlResult.update({
-          status: 'failed',
-          completedAt: new Date(),
-          errorMessage: crawlError.message,
+        await prisma.crawlResult.update({
+          where: { id: crawlResult.id },
+          data: {
+            status: 'failed',
+            completedAt: new Date(),
+            errorMessage: crawlError.message,
+          },
         });
 
         throw crawlError;
@@ -414,7 +445,10 @@ class CrawlProcessor {
         updateData.healthScore = Math.round(healthScore * 100) / 100;
       }
 
-      await website.update(updateData);
+      await prisma.website.update({
+        where: { id: website.id },
+        data: updateData,
+      });
 
       console.log(
         `Updated stats for website ${website.id}: Health Score ${updateData.healthScore}%`

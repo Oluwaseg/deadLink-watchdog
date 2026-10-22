@@ -1,8 +1,12 @@
 const express = require('express');
 const { body, query, param, validationResult } = require('express-validator');
-const { Website, CrawlResult, BrokenLink } = require('../models');
+const prisma = require('../lib/prisma');
 const { QueueService } = require('../services/queue');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const {
+  toPrismaErrorType,
+  fromPrismaErrorType,
+} = require('../utils/errorType');
 
 const router = express.Router();
 const queueService = new QueueService();
@@ -130,6 +134,33 @@ const checkValidation = (req, res, next) => {
   next();
 };
 
+const calculateNextCrawlTime = (frequency) => {
+  const now = new Date();
+  const nextCrawl = new Date(now);
+
+  switch (frequency) {
+    case 'daily':
+      nextCrawl.setDate(now.getDate() + 1);
+      break;
+    case 'weekly':
+      nextCrawl.setDate(now.getDate() + 7);
+      break;
+    case 'monthly':
+      nextCrawl.setMonth(now.getMonth() + 1);
+      break;
+    default:
+      nextCrawl.setDate(now.getDate() + 7);
+  }
+
+  nextCrawl.setHours(2, 0, 0, 0);
+  return nextCrawl;
+};
+
+const mapBrokenLink = (link) => ({
+  ...link,
+  errorType: fromPrismaErrorType(link.errorType),
+});
+
 // @route   GET /api/websites
 // @desc    Get all websites for the authenticated user
 // @access  Private
@@ -161,33 +192,33 @@ router.get(
   asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const whereClause = { userId: req.user.id };
+    const where = { userId: req.user.id };
 
     if (req.query.category) {
-      whereClause.category = req.query.category;
+      where.category = req.query.category;
     }
 
     if (req.query.isActive !== undefined) {
-      whereClause.isActive = req.query.isActive === 'true';
+      where.isActive = req.query.isActive === 'true';
     }
 
-    const { count, rows: websites } = await Website.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-      include: [
-        {
-          model: CrawlResult,
-          as: 'crawlResults',
-          limit: 1,
-          order: [['createdAt', 'DESC']],
-          required: false,
+    const [websites, count] = await Promise.all([
+      prisma.website.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          crawlResults: {
+            take: 1,
+            orderBy: { createdAt: 'desc' },
+          },
         },
-      ],
-    });
+      }),
+      prisma.website.count({ where }),
+    ]);
 
     res.json({
       success: true,
@@ -248,20 +279,17 @@ router.get(
   [param('id').isUUID().withMessage('Website ID must be a valid UUID')],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const website = await Website.findOne({
+    const website = await prisma.website.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
       },
-      include: [
-        {
-          model: CrawlResult,
-          as: 'crawlResults',
-          limit: 5,
-          order: [['createdAt', 'DESC']],
-          required: false,
+      include: {
+        crawlResults: {
+          take: 5,
+          orderBy: { createdAt: 'desc' },
         },
-      ],
+      },
     });
 
     if (!website) {
@@ -347,24 +375,24 @@ router.post(
   validateWebsite,
   checkValidation,
   asyncHandler(async (req, res) => {
-    // Clean up request body to handle empty/null values
     const websiteData = {
-      ...req.body,
-      userId: req.user.id,
+      url: req.body.url,
+      name: req.body.name,
+      description: req.body.description || null,
+      category: req.body.category || undefined,
       crawlFrequency: req.body.crawlFrequency || null,
       notificationEmail: req.body.notificationEmail || null,
-      webhookUrl: req.body.webhookUrl || null
+      webhookUrl: req.body.webhookUrl || null,
+      userId: req.user.id,
     };
 
-    // Remove empty string values to let default values take effect
-    Object.keys(websiteData).forEach(key => {
+    Object.keys(websiteData).forEach((key) => {
       if (websiteData[key] === '') {
         websiteData[key] = null;
       }
     });
 
-    // Check if URL already exists for this user
-    const existingWebsite = await Website.findOne({
+    const existingWebsite = await prisma.website.findFirst({
       where: {
         url: req.body.url,
         userId: req.user.id,
@@ -379,38 +407,17 @@ router.post(
       );
     }
 
-    const website = await Website.create(websiteData);
+    let website = await prisma.website.create({ data: websiteData });
 
-    // Only set nextCrawlAt if crawlFrequency is provided (for automatic crawling)
     if (websiteData.crawlFrequency) {
-      const calculateNextCrawlTime = (frequency) => {
-        const now = new Date();
-        const nextCrawl = new Date(now);
-
-        switch (frequency) {
-          case 'daily':
-            nextCrawl.setDate(now.getDate() + 1);
-            break;
-          case 'weekly':
-            nextCrawl.setDate(now.getDate() + 7);
-            break;
-          case 'monthly':
-            nextCrawl.setMonth(now.getMonth() + 1);
-            break;
-          default:
-            nextCrawl.setDate(now.getDate() + 7);
-        }
-
-        nextCrawl.setHours(2, 0, 0, 0);
-        return nextCrawl;
-      };
-
-      await website.update({
-        nextCrawlAt: calculateNextCrawlTime(websiteData.crawlFrequency),
+      website = await prisma.website.update({
+        where: { id: website.id },
+        data: {
+          nextCrawlAt: calculateNextCrawlTime(websiteData.crawlFrequency),
+        },
       });
     }
 
-    // Schedule initial crawl
     await queueService.addCrawlJob(website.id, req.user.id, {
       priority: 'high',
       scheduledBy: 'user',
@@ -502,7 +509,7 @@ router.put(
   validateWebsite,
   checkValidation,
   asyncHandler(async (req, res) => {
-    const website = await Website.findOne({
+    const website = await prisma.website.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
@@ -513,13 +520,12 @@ router.put(
       throw new AppError('Website not found', 404, 'WEBSITE_NOT_FOUND');
     }
 
-    // Check if URL already exists for another website
     if (req.body.url && req.body.url !== website.url) {
-      const existingWebsite = await Website.findOne({
+      const existingWebsite = await prisma.website.findFirst({
         where: {
           url: req.body.url,
           userId: req.user.id,
-          id: { [require('sequelize').Op.ne]: req.params.id },
+          id: { not: req.params.id },
         },
       });
 
@@ -532,45 +538,45 @@ router.put(
       }
     }
 
-    // Handle crawlFrequency changes
-    if ('crawlFrequency' in req.body) {
-      if (!req.body.crawlFrequency) {
-        // If crawlFrequency is being removed, clear nextCrawlAt
-        req.body.nextCrawlAt = null;
-      } else {
-        // If setting a new crawlFrequency, calculate next crawl time
-        const calculateNextCrawlTime = (frequency) => {
-          const now = new Date();
-          const nextCrawl = new Date(now);
+    const updateData = {};
+    const allowedFields = [
+      'url',
+      'name',
+      'description',
+      'category',
+      'isActive',
+      'crawlFrequency',
+      'notificationEmail',
+      'webhookUrl',
+    ];
 
-          switch (frequency) {
-            case 'daily':
-              nextCrawl.setDate(now.getDate() + 1);
-              break;
-            case 'weekly':
-              nextCrawl.setDate(now.getDate() + 7);
-              break;
-            case 'monthly':
-              nextCrawl.setMonth(now.getMonth() + 1);
-              break;
-            default:
-              nextCrawl.setDate(now.getDate() + 7);
-          }
-
-          nextCrawl.setHours(2, 0, 0, 0);
-          return nextCrawl;
-        };
-
-        req.body.nextCrawlAt = calculateNextCrawlTime(req.body.crawlFrequency);
+    for (const field of allowedFields) {
+      if (field in req.body) {
+        updateData[field] =
+          req.body[field] === '' ? null : req.body[field];
       }
     }
 
-    await website.update(req.body);
+    if ('crawlFrequency' in req.body) {
+      if (!req.body.crawlFrequency) {
+        updateData.crawlFrequency = null;
+        updateData.nextCrawlAt = null;
+      } else {
+        updateData.nextCrawlAt = calculateNextCrawlTime(
+          req.body.crawlFrequency
+        );
+      }
+    }
+
+    const updatedWebsite = await prisma.website.update({
+      where: { id: website.id },
+      data: updateData,
+    });
 
     res.json({
       success: true,
       message: 'Website updated successfully',
-      data: { website },
+      data: { website: updatedWebsite },
     });
   })
 );
@@ -616,7 +622,7 @@ router.delete(
   [param('id').isUUID().withMessage('Website ID must be a valid UUID')],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const website = await Website.findOne({
+    const website = await prisma.website.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
@@ -627,20 +633,19 @@ router.delete(
       throw new AppError('Website not found', 404, 'WEBSITE_NOT_FOUND');
     }
 
-    // Remove recurring crawl job
     await queueService.removeRecurringCrawlJob(website.id);
 
-    // Delete associated records first
-    await BrokenLink.destroy({
-      where: { websiteId: website.id }
+    await prisma.brokenLink.deleteMany({
+      where: { websiteId: website.id },
     });
 
-    await CrawlResult.destroy({
-      where: { websiteId: website.id }
+    await prisma.crawlResult.deleteMany({
+      where: { websiteId: website.id },
     });
 
-    // Now delete the website
-    await website.destroy();
+    await prisma.website.delete({
+      where: { id: website.id },
+    });
 
     res.json({
       success: true,
@@ -699,7 +704,7 @@ router.post(
   ],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const website = await Website.findOne({
+    const website = await prisma.website.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
@@ -714,7 +719,6 @@ router.post(
       throw new AppError('Website is not active', 400, 'WEBSITE_INACTIVE');
     }
 
-    // Add crawl job to queue
     const job = await queueService.addCrawlJob(website.id, req.user.id, {
       crawlDepth: req.body.crawlDepth || 1,
       priority: 'high',
@@ -726,7 +730,7 @@ router.post(
       message: 'Crawl job queued successfully',
       data: {
         jobId: job.id,
-        estimatedStartTime: new Date(Date.now() + 30000), // Rough estimate
+        estimatedStartTime: new Date(Date.now() + 30000),
       },
     });
   })
@@ -815,7 +819,7 @@ router.get(
   ],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const website = await Website.findOne({
+    const website = await prisma.website.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
@@ -828,29 +832,32 @@ router.get(
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const whereClause = { websiteId: req.params.id };
+    const where = { websiteId: req.params.id };
 
     if (req.query.errorType) {
-      whereClause.errorType = req.query.errorType;
+      where.errorType = toPrismaErrorType(req.query.errorType);
     }
 
     if (req.query.isFixed !== undefined) {
-      whereClause.isFixed = req.query.isFixed === 'true';
+      where.isFixed = req.query.isFixed === 'true';
     }
 
-    const { count, rows: brokenLinks } = await BrokenLink.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-    });
+    const [brokenLinks, count] = await Promise.all([
+      prisma.brokenLink.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.brokenLink.count({ where }),
+    ]);
 
     res.json({
       success: true,
       data: {
-        brokenLinks,
+        brokenLinks: brokenLinks.map(mapBrokenLink),
         pagination: {
           page,
           limit,

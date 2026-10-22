@@ -1,4 +1,6 @@
 allowBuilds:
-  '@scarf/scarf': false
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true
   msgpackr-extract: true
   puppeteer: true

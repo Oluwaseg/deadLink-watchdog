@@ -8,7 +8,7 @@ const swaggerUI = require('swagger-ui-express');
 const swaggerSpec = require('./config/swagger');
 
 const config = require('../config/config');
-const db = require('./models');
+const prisma = require('./lib/prisma');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -219,7 +219,7 @@ class App {
       await this.queueService.close();
 
       // Close database connections
-      await db.sequelize.close();
+      await prisma.$disconnect();
 
       console.log('Graceful shutdown completed');
       process.exit(0);
@@ -232,14 +232,8 @@ class App {
   async start() {
     try {
       // Test database connection
-      await db.sequelize.authenticate();
+      await prisma.$connect();
       console.log('Database connection established successfully');
-
-      // Sync database (in development)
-      if (config.nodeEnv === 'development') {
-        await db.sequelize.sync({ alter: true });
-        console.log('Database synchronized');
-      }
 
       // Start the server
       this.server = this.app.listen(config.port, () => {

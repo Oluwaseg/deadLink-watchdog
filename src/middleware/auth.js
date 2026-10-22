@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const prisma = require('../lib/prisma');
 const config = require('../../config/config');
 
 const authenticateToken = async (req, res, next) => {
@@ -17,8 +17,9 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, config.jwt.secret);
 
     // Find the user
-    const user = await User.findByPk(decoded.userId, {
-      attributes: { exclude: ['password'] },
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      omit: { password: true },
     });
 
     if (!user) {
@@ -78,8 +79,9 @@ const optionalAuth = async (req, res, next) => {
 
     if (token) {
       const decoded = jwt.verify(token, config.jwt.secret);
-      const user = await User.findByPk(decoded.userId, {
-        attributes: { exclude: ['password'] },
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+        omit: { password: true },
       });
 
       if (user && user.isActive) {

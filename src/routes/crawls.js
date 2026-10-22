@@ -1,8 +1,12 @@
 const express = require('express');
 const { query, param, validationResult } = require('express-validator');
-const { CrawlResult, Website, BrokenLink } = require('../models');
+const prisma = require('../lib/prisma');
 const { QueueService } = require('../services/queue');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const {
+  toPrismaErrorType,
+  fromPrismaErrorType,
+} = require('../utils/errorType');
 
 const router = express.Router();
 const queueService = new QueueService();
@@ -19,6 +23,11 @@ const checkValidation = (req, res, next) => {
   }
   next();
 };
+
+const mapBrokenLink = (link) => ({
+  ...link,
+  errorType: fromPrismaErrorType(link.errorType),
+});
 
 /**
  * @swagger
@@ -112,31 +121,32 @@ router.get(
   asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const whereClause = { userId: req.user.id };
+    const where = { userId: req.user.id };
 
     if (req.query.status) {
-      whereClause.status = req.query.status;
+      where.status = req.query.status;
     }
 
     if (req.query.websiteId) {
-      whereClause.websiteId = req.query.websiteId;
+      where.websiteId = req.query.websiteId;
     }
 
-    const { count, rows: crawlResults } = await CrawlResult.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-      include: [
-        {
-          model: Website,
-          as: 'website',
-          attributes: ['id', 'name', 'url', 'category'],
+    const [crawlResults, count] = await Promise.all([
+      prisma.crawlResult.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          website: {
+            select: { id: true, name: true, url: true, category: true },
+          },
         },
-      ],
-    });
+      }),
+      prisma.crawlResult.count({ where }),
+    ]);
 
     res.json({
       success: true,
@@ -194,7 +204,6 @@ router.get(
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
 
-    // Get basic counts
     const [
       totalCrawls,
       completedCrawls,
@@ -202,57 +211,37 @@ router.get(
       runningCrawls,
       totalBrokenLinks,
     ] = await Promise.all([
-      CrawlResult.count({ where: { userId } }),
-      CrawlResult.count({ where: { userId, status: 'completed' } }),
-      CrawlResult.count({ where: { userId, status: 'failed' } }),
-      CrawlResult.count({ where: { userId, status: 'running' } }),
-      BrokenLink.count({
-        include: [
-          {
-            model: CrawlResult,
-            as: 'crawlResult',
-            where: { userId },
-            attributes: [],
-          },
-        ],
+      prisma.crawlResult.count({ where: { userId } }),
+      prisma.crawlResult.count({ where: { userId, status: 'completed' } }),
+      prisma.crawlResult.count({ where: { userId, status: 'failed' } }),
+      prisma.crawlResult.count({ where: { userId, status: 'running' } }),
+      prisma.brokenLink.count({
+        where: {
+          crawlResult: { userId },
+        },
       }),
     ]);
 
-    // Get recent crawl activity (last 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const recentCrawls = await CrawlResult.count({
+    const recentCrawls = await prisma.crawlResult.count({
       where: {
         userId,
-        createdAt: {
-          [require('sequelize').Op.gte]: thirtyDaysAgo,
-        },
+        createdAt: { gte: thirtyDaysAgo },
       },
     });
 
-    // Get average response time from recent completed crawls
-    const avgResponseTimeResult = await CrawlResult.findOne({
+    const avgResult = await prisma.crawlResult.aggregate({
       where: {
         userId,
         status: 'completed',
-        createdAt: {
-          [require('sequelize').Op.gte]: thirtyDaysAgo,
-        },
+        createdAt: { gte: thirtyDaysAgo },
       },
-      attributes: [
-        [
-          require('sequelize').fn(
-            'AVG',
-            require('sequelize').col('averageResponseTime')
-          ),
-          'avgResponseTime',
-        ],
-      ],
+      _avg: { averageResponseTime: true },
     });
 
-    const averageResponseTime =
-      avgResponseTimeResult?.dataValues?.avgResponseTime || 0;
+    const averageResponseTime = avgResult._avg.averageResponseTime || 0;
 
     res.json({
       success: true,
@@ -338,120 +327,45 @@ router.get(
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    // Get daily crawl counts
-    const dailyCrawls = await CrawlResult.findAll({
-      where: {
-        userId,
-        createdAt: {
-          [require('sequelize').Op.gte]: startDate,
-        },
-      },
-      attributes: [
-        [
-          require('sequelize').fn(
-            'DATE',
-            require('sequelize').col('createdAt')
-          ),
-          'date',
-        ],
-        [
-          require('sequelize').fn('COUNT', require('sequelize').col('id')),
-          'count',
-        ],
-        [
-          require('sequelize').fn(
-            'SUM',
-            require('sequelize').literal(
-              "CASE WHEN status = 'completed' THEN 1 ELSE 0 END"
-            )
-          ),
-          'completed',
-        ],
-        [
-          require('sequelize').fn(
-            'SUM',
-            require('sequelize').literal(
-              "CASE WHEN status = 'failed' THEN 1 ELSE 0 END"
-            )
-          ),
-          'failed',
-        ],
-      ],
-      group: [
-        require('sequelize').fn('DATE', require('sequelize').col('createdAt')),
-      ],
-      order: [
-        [
-          require('sequelize').fn(
-            'DATE',
-            require('sequelize').col('createdAt')
-          ),
-          'ASC',
-        ],
-      ],
-    });
-
-    // Get broken links trend
-    const brokenLinksTrend = await BrokenLink.findAll({
-      where: {
-        createdAt: {
-          [require('sequelize').Op.gte]: startDate,
-        },
-      },
-      include: [
-        {
-          model: CrawlResult,
-          as: 'crawlResult',
-          where: { userId },
-          attributes: [],
-        },
-      ],
-      attributes: [
-        [
-          require('sequelize').fn(
-            'DATE',
-            require('sequelize').col('BrokenLink.createdAt')
-          ),
-          'date',
-        ],
-        [
-          require('sequelize').fn(
-            'COUNT',
-            require('sequelize').col('BrokenLink.id')
-          ),
-          'count',
-        ],
-      ],
-      group: [
-        require('sequelize').fn(
-          'DATE',
-          require('sequelize').col('BrokenLink.createdAt')
-        ),
-      ],
-      order: [
-        [
-          require('sequelize').fn(
-            'DATE',
-            require('sequelize').col('BrokenLink.createdAt')
-          ),
-          'ASC',
-        ],
-      ],
-    });
+    const [dailyCrawls, brokenLinksTrend] = await Promise.all([
+      prisma.$queryRaw`
+        SELECT
+          DATE("createdAt")::text AS date,
+          COUNT(id)::int AS count,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)::int AS completed,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::int AS failed
+        FROM crawl_results
+        WHERE "userId" = ${userId}::uuid
+          AND "createdAt" >= ${startDate}
+        GROUP BY DATE("createdAt")
+        ORDER BY DATE("createdAt") ASC
+      `,
+      prisma.$queryRaw`
+        SELECT
+          DATE(bl."createdAt")::text AS date,
+          COUNT(bl.id)::int AS count
+        FROM broken_links bl
+        INNER JOIN crawl_results cr ON bl."crawlResultId" = cr.id
+        WHERE cr."userId" = ${userId}::uuid
+          AND bl."createdAt" >= ${startDate}
+        GROUP BY DATE(bl."createdAt")
+        ORDER BY DATE(bl."createdAt") ASC
+      `,
+    ]);
 
     res.json({
       success: true,
       data: {
         trends: {
           dailyCrawls: dailyCrawls.map((item) => ({
-            date: item.dataValues.date,
-            total: parseInt(item.dataValues.count),
-            completed: parseInt(item.dataValues.completed),
-            failed: parseInt(item.dataValues.failed),
+            date: item.date,
+            total: Number(item.count),
+            completed: Number(item.completed),
+            failed: Number(item.failed),
           })),
           brokenLinks: brokenLinksTrend.map((item) => ({
-            date: item.dataValues.date,
-            count: parseInt(item.dataValues.count),
+            date: item.date,
+            count: Number(item.count),
           })),
         },
       },
@@ -503,24 +417,20 @@ router.get(
   [param('id').isUUID().withMessage('Crawl ID must be a valid UUID')],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const crawlResult = await CrawlResult.findOne({
+    const crawlResult = await prisma.crawlResult.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
       },
-      include: [
-        {
-          model: Website,
-          as: 'website',
-          attributes: ['id', 'name', 'url', 'category'],
+      include: {
+        website: {
+          select: { id: true, name: true, url: true, category: true },
         },
-        {
-          model: BrokenLink,
-          as: 'brokenLinkRecords',
-          limit: 50,
-          order: [['createdAt', 'DESC']],
+        brokenLinkRecords: {
+          take: 50,
+          orderBy: { createdAt: 'desc' },
         },
-      ],
+      },
     });
 
     if (!crawlResult) {
@@ -533,7 +443,12 @@ router.get(
 
     res.json({
       success: true,
-      data: { crawlResult },
+      data: {
+        crawlResult: {
+          ...crawlResult,
+          brokenLinkRecords: crawlResult.brokenLinkRecords.map(mapBrokenLink),
+        },
+      },
     });
   })
 );
@@ -625,13 +540,12 @@ router.get(
   ],
   checkValidation,
   asyncHandler(async (req, res) => {
-    // First verify the crawl result belongs to the user
-    const crawlResult = await CrawlResult.findOne({
+    const crawlResult = await prisma.crawlResult.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
       },
-      attributes: ['id'],
+      select: { id: true },
     });
 
     if (!crawlResult) {
@@ -644,25 +558,28 @@ router.get(
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const whereClause = { crawlResultId: req.params.id };
+    const where = { crawlResultId: req.params.id };
 
     if (req.query.errorType) {
-      whereClause.errorType = req.query.errorType;
+      where.errorType = toPrismaErrorType(req.query.errorType);
     }
 
-    const { count, rows: brokenLinks } = await BrokenLink.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-    });
+    const [brokenLinks, count] = await Promise.all([
+      prisma.brokenLink.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.brokenLink.count({ where }),
+    ]);
 
     res.json({
       success: true,
       data: {
-        brokenLinks,
+        brokenLinks: brokenLinks.map(mapBrokenLink),
         pagination: {
           page,
           limit,
@@ -682,18 +599,16 @@ router.post(
   [param('id').isUUID().withMessage('Crawl ID must be a valid UUID')],
   checkValidation,
   asyncHandler(async (req, res) => {
-    const crawlResult = await CrawlResult.findOne({
+    const crawlResult = await prisma.crawlResult.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
       },
-      include: [
-        {
-          model: Website,
-          as: 'website',
-          attributes: ['id', 'isActive'],
+      include: {
+        website: {
+          select: { id: true, isActive: true },
         },
-      ],
+      },
     });
 
     if (!crawlResult) {
@@ -716,7 +631,6 @@ router.post(
       throw new AppError('Website is not active', 400, 'WEBSITE_INACTIVE');
     }
 
-    // Add new crawl job to queue
     const job = await queueService.addCrawlJob(
       crawlResult.websiteId,
       req.user.id,

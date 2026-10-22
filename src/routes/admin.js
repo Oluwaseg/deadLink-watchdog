@@ -1,11 +1,10 @@
 const express = require('express');
 const { query, param } = require('express-validator');
-const { User, Website, CrawlResult, BrokenLink } = require('../models');
+const prisma = require('../lib/prisma');
+const { excludePassword } = require('../utils/password');
 const { QueueService } = require('../services/queue');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
-const { Op } = require('sequelize');
-const sequelize = require('sequelize');
 
 const router = express.Router();
 const queueService = new QueueService();
@@ -115,15 +114,21 @@ router.get(
       recentUsers,
       queueStats,
     ] = await Promise.all([
-      User.count(),
-      Website.count(),
-      CrawlResult.count(),
-      BrokenLink.count(),
-      Website.count({ where: { isActive: true } }),
-      User.findAll({
-        limit: 5,
-        order: [['createdAt', 'DESC']],
-        attributes: ['id', 'email', 'firstName', 'lastName', 'createdAt'],
+      prisma.user.count(),
+      prisma.website.count(),
+      prisma.crawlResult.count(),
+      prisma.brokenLink.count(),
+      prisma.website.count({ where: { isActive: true } }),
+      prisma.user.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          createdAt: true,
+        },
       }),
       queueService.getQueueStats(),
     ]);
@@ -240,26 +245,37 @@ router.get(
   ],
   asyncHandler(async (req, res) => {
     const { page = 1, limit = 20, search, role, isActive } = req.query;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
     const where = {};
     if (search) {
-      where[Op.or] = [
-        { email: { [Op.iLike]: `%${search}%` } },
-        { firstName: { [Op.iLike]: `%${search}%` } },
-        { lastName: { [Op.iLike]: `%${search}%` } }
+      where.OR = [
+        { email: { contains: search, mode: 'insensitive' } },
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
       ];
     }
     if (role) where.role = role;
     if (isActive !== undefined) where.isActive = isActive === 'true';
 
-    const { count, rows: users } = await User.findAndCountAll({
-      where,
-      attributes: ['id', 'email', 'firstName', 'lastName', 'role', 'isActive', 'createdAt'],
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['createdAt', 'DESC']]
-    });
+    const [users, count] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+        },
+        take: parseInt(limit),
+        skip: parseInt(skip),
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.user.count({ where }),
+    ]);
 
     res.json({
       success: true,
@@ -269,9 +285,9 @@ router.get(
           page: parseInt(page),
           limit: parseInt(limit),
           total: count,
-          pages: Math.ceil(count / limit)
-        }
-      }
+          pages: Math.ceil(count / limit),
+        },
+      },
     });
   })
 );
@@ -283,7 +299,9 @@ router.put(
   '/users/:id/status',
   [param('id').isUUID()],
   asyncHandler(async (req, res) => {
-    const user = await User.findByPk(req.params.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+    });
 
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
@@ -293,14 +311,17 @@ router.put(
       throw new AppError('Cannot modify other admin users', 403, 'FORBIDDEN');
     }
 
-    await user.update({ isActive: !user.isActive });
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: { isActive: !user.isActive },
+    });
 
     res.json({
       success: true,
       message: `User ${
-        user.isActive ? 'activated' : 'deactivated'
+        updatedUser.isActive ? 'activated' : 'deactivated'
       } successfully`,
-      data: { user },
+      data: { user: excludePassword(updatedUser) },
     });
   })
 );
@@ -369,18 +390,23 @@ router.put(
       throw new AppError('Cannot modify your own role', 403, 'FORBIDDEN');
     }
 
-    const user = await User.findByPk(req.params.id);
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+    });
 
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
 
-    await user.update({ role: req.query.role });
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: { role: req.query.role },
+    });
 
     res.json({
       success: true,
       message: 'User role updated successfully',
-      data: { user },
+      data: { user: excludePassword(updatedUser) },
     });
   })
 );
@@ -469,32 +495,35 @@ router.get(
   asyncHandler(async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    const whereClause = {
-      [Op.or]: [{ isFlagged: true }, { reports: { [Op.gt]: 0 } }],
+    const where = {
+      OR: [{ isFlagged: true }, { reports: { gt: 0 } }],
     };
 
     if (req.query.status === 'blocked') {
-      whereClause.isActive = false;
+      where.isActive = false;
     }
 
-    const { count, rows: websites } = await Website.findAndCountAll({
-      where: whereClause,
-      limit,
-      offset,
-      order: [
-        ['reports', 'DESC'],
-        ['createdAt', 'DESC'],
-      ],
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'email', 'firstName', 'lastName'],
+    const [websites, count] = await Promise.all([
+      prisma.website.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: [{ reports: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
         },
-      ],
-    });
+      }),
+      prisma.website.count({ where }),
+    ]);
 
     res.json({
       success: true,
@@ -569,24 +598,29 @@ router.put(
   '/websites/:id/moderate',
   [param('id').isUUID(), query('action').isIn(['block', 'unblock'])],
   asyncHandler(async (req, res) => {
-    const website = await Website.findByPk(req.params.id);
+    const website = await prisma.website.findUnique({
+      where: { id: req.params.id },
+    });
 
     if (!website) {
       throw new AppError('Website not found', 404, 'WEBSITE_NOT_FOUND');
     }
 
-    await website.update({
-      isActive: req.query.action === 'unblock',
-      isFlagged: false,
-      reports: 0,
-      moderatedAt: new Date(),
-      moderatedBy: req.user.id,
+    const updatedWebsite = await prisma.website.update({
+      where: { id: website.id },
+      data: {
+        isActive: req.query.action === 'unblock',
+        isFlagged: false,
+        reports: 0,
+        moderatedAt: new Date(),
+        moderatedBy: req.user.id,
+      },
     });
 
     res.json({
       success: true,
       message: `Website ${req.query.action}ed successfully`,
-      data: { website },
+      data: { website: updatedWebsite },
     });
   })
 );
@@ -642,8 +676,8 @@ router.get(
       success: true,
       data: {
         stats,
-        activeJobs
-      }
+        activeJobs,
+      },
     });
   })
 );
@@ -691,12 +725,17 @@ router.put(
     const { userId } = req.params;
     const { isActive } = req.body;
 
-    const user = await User.findByPk(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
     if (!user) {
       throw new AppError('User not found', 404);
     }
 
-    await user.update({ isActive });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { isActive },
+    });
 
     res.json({
       success: true,
@@ -764,27 +803,25 @@ router.get(
         activeWebsites,
         websitesByCategory,
         websitesByStatus,
-        newWebsites
+        newWebsites,
       ] = await Promise.all([
-        Website.count(),
-        Website.count({ where: { isActive: true } }),
-        Website.findAll({
-          attributes: ['category', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
-          group: ['category']
+        prisma.website.count(),
+        prisma.website.count({ where: { isActive: true } }),
+        prisma.website.groupBy({
+          by: ['category'],
+          _count: { id: true },
         }),
-        Website.findAll({
-          attributes: ['isActive', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
-          group: ['isActive']
+        prisma.website.groupBy({
+          by: ['isActive'],
+          _count: { id: true },
         }),
-        Website.findAll({
+        prisma.website.findMany({
           where: {
-            createdAt: {
-              [Op.gte]: startDate
-            }
+            createdAt: { gte: startDate },
           },
-          order: [['createdAt', 'DESC']],
-          limit: 10
-        })
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+        }),
       ]);
 
       res.json({
@@ -793,19 +830,21 @@ router.get(
           totalWebsites,
           activeWebsites,
           websitesByCategory: websitesByCategory.reduce((acc, curr) => {
-            acc[curr.category] = curr.get('count');
+            acc[curr.category] = curr._count.id;
             return acc;
           }, {}),
           websitesByStatus: websitesByStatus.reduce((acc, curr) => {
-            acc[curr.isActive ? 'active' : 'inactive'] = curr.get('count');
+            acc[curr.isActive ? 'active' : 'inactive'] = curr._count.id;
             return acc;
           }, {}),
-          newWebsites
-        }
+          newWebsites,
+        },
       });
     } catch (error) {
       console.error('Error fetching website analytics:', error);
-      res.status(500).json({ success: false, message: 'Error fetching website analytics' });
+      res
+        .status(500)
+        .json({ success: false, message: 'Error fetching website analytics' });
     }
   })
 );
@@ -862,29 +901,30 @@ router.get(
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - period);
 
-      const [
-        totalUsers,
-        activeUsers,
-        usersByRole,
-        newUsers
-      ] = await Promise.all([
-        User.count(),
-        User.count({ where: { isActive: true } }),
-        User.findAll({
-          attributes: ['role', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
-          group: ['role']
-        }),
-        User.findAll({
-          where: {
-            createdAt: {
-              [Op.gte]: startDate
-            }
-          },
-          attributes: ['id', 'email', 'firstName', 'lastName', 'role', 'createdAt'],
-          order: [['createdAt', 'DESC']],
-          limit: 10
-        })
-      ]);
+      const [totalUsers, activeUsers, usersByRole, newUsers] =
+        await Promise.all([
+          prisma.user.count(),
+          prisma.user.count({ where: { isActive: true } }),
+          prisma.user.groupBy({
+            by: ['role'],
+            _count: { id: true },
+          }),
+          prisma.user.findMany({
+            where: {
+              createdAt: { gte: startDate },
+            },
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+              role: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+          }),
+        ]);
 
       res.json({
         success: true,
@@ -892,15 +932,17 @@ router.get(
           totalUsers,
           activeUsers,
           usersByRole: usersByRole.reduce((acc, curr) => {
-            acc[curr.role] = curr.get('count');
+            acc[curr.role] = curr._count.id;
             return acc;
           }, {}),
-          newUsers
-        }
+          newUsers,
+        },
       });
     } catch (error) {
       console.error('Error fetching user analytics:', error);
-      res.status(500).json({ success: false, message: 'Error fetching user analytics' });
+      res
+        .status(500)
+        .json({ success: false, message: 'Error fetching user analytics' });
     }
   })
 );

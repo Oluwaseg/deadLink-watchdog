@@ -1,8 +1,7 @@
 const express = require('express');
 const { query, validationResult } = require('express-validator');
-const { Website, CrawlResult, BrokenLink, User } = require('../models');
+const prisma = require('../lib/prisma');
 const { asyncHandler } = require('../middleware/errorHandler');
-const { Op } = require('sequelize');
 
 const router = express.Router();
 
@@ -81,8 +80,8 @@ const checkValidation = (req, res, next) => {
 // @access  Private
 router.get('/overview', asyncHandler(async (req, res) => {
   const userId = req.user.id;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  // Get basic counts
   const [
     totalWebsites,
     activeWebsites,
@@ -91,62 +90,57 @@ router.get('/overview', asyncHandler(async (req, res) => {
     totalBrokenLinks,
     recentBrokenLinks
   ] = await Promise.all([
-    Website.count({ where: { userId } }),
-    Website.count({ where: { userId, isActive: true } }),
-    CrawlResult.count({ where: { userId } }),
-    CrawlResult.count({
+    prisma.website.count({ where: { userId } }),
+    prisma.website.count({ where: { userId, isActive: true } }),
+    prisma.crawlResult.count({ where: { userId } }),
+    prisma.crawlResult.count({
       where: {
         userId,
-        createdAt: {
-          [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
-        }
+        createdAt: { gte: sevenDaysAgo }
       }
     }),
-    BrokenLink.count({
-      include: [{
-        model: CrawlResult,
-        as: 'crawlResult',
-        where: { userId },
-        attributes: []
-      }]
-    }),
-    BrokenLink.count({
+    prisma.brokenLink.count({
       where: {
-        createdAt: {
-          [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-        }
-      },
-      include: [{
-        model: CrawlResult,
-        as: 'crawlResult',
-        where: { userId },
-        attributes: []
-      }]
+        crawlResult: { userId }
+      }
+    }),
+    prisma.brokenLink.count({
+      where: {
+        createdAt: { gte: sevenDaysAgo },
+        crawlResult: { userId }
+      }
     })
   ]);
 
-  // Get websites with health scores
-  const websitesWithHealth = await Website.findAll({
+  const websitesWithHealth = await prisma.website.findMany({
     where: { userId },
-    attributes: ['id', 'name', 'healthScore', 'totalLinks', 'brokenLinks'],
-    order: [['healthScore', 'ASC']],
-    limit: 5
+    select: {
+      id: true,
+      name: true,
+      healthScore: true,
+      totalLinks: true,
+      brokenLinks: true
+    },
+    orderBy: { healthScore: 'asc' },
+    take: 5
   });
 
-  // Get recent crawl activity
-  const recentActivity = await CrawlResult.findAll({
+  const recentActivity = await prisma.crawlResult.findMany({
     where: { userId },
-    include: [{
-      model: Website,
-      as: 'website',
-      attributes: ['name', 'url']
-    }],
-    order: [['createdAt', 'DESC']],
-    limit: 10,
-    attributes: ['id', 'status', 'brokenLinksFound', 'totalLinksChecked', 'createdAt']
+    select: {
+      id: true,
+      status: true,
+      brokenLinksFound: true,
+      totalLinksChecked: true,
+      createdAt: true,
+      website: {
+        select: { name: true, url: true }
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10
   });
 
-  // Calculate average health score
   const avgHealthScore = websitesWithHealth.length > 0
     ? websitesWithHealth.reduce((sum, site) => sum + parseFloat(site.healthScore), 0) / websitesWithHealth.length
     : 100;
@@ -215,18 +209,31 @@ router.get('/overview', asyncHandler(async (req, res) => {
 // @desc    Get health scores for all websites
 // @access  Private
 router.get('/health-scores', asyncHandler(async (req, res) => {
-  const websites = await Website.findAll({
+  const websites = await prisma.website.findMany({
     where: { userId: req.user.id },
-    attributes: ['id', 'name', 'url', 'healthScore', 'totalLinks', 'brokenLinks', 'lastCrawledAt'],
-    order: [['healthScore', 'ASC']]
+    select: {
+      id: true,
+      name: true,
+      url: true,
+      healthScore: true,
+      totalLinks: true,
+      brokenLinks: true,
+      lastCrawledAt: true
+    },
+    orderBy: { healthScore: 'asc' }
   });
 
-  // Categorize websites by health score
   const healthCategories = {
-    critical: websites.filter(w => w.healthScore < 50),
-    warning: websites.filter(w => w.healthScore >= 50 && w.healthScore < 80),
-    good: websites.filter(w => w.healthScore >= 80 && w.healthScore < 95),
-    excellent: websites.filter(w => w.healthScore >= 95)
+    critical: websites.filter(w => parseFloat(w.healthScore) < 50),
+    warning: websites.filter(w => {
+      const score = parseFloat(w.healthScore);
+      return score >= 50 && score < 80;
+    }),
+    good: websites.filter(w => {
+      const score = parseFloat(w.healthScore);
+      return score >= 80 && score < 95;
+    }),
+    excellent: websites.filter(w => parseFloat(w.healthScore) >= 95)
   };
 
   res.json({
@@ -286,37 +293,38 @@ router.get('/health-scores', asyncHandler(async (req, res) => {
 // @desc    Get broken links summary by error type
 // @access  Private
 router.get('/broken-links-summary', asyncHandler(async (req, res) => {
-  const brokenLinksSummary = await BrokenLink.findAll({
-    include: [{
-      model: CrawlResult,
-      as: 'crawlResult',
-      where: { userId: req.user.id },
-      attributes: []
-    }],
-    attributes: [
-      'errorType',
-      [require('sequelize').fn('COUNT', require('sequelize').col('BrokenLink.id')), 'count']
-    ],
-    group: ['errorType'],
-    order: [[require('sequelize').fn('COUNT', require('sequelize').col('BrokenLink.id')), 'DESC']]
+  const brokenLinksSummary = await prisma.brokenLink.groupBy({
+    by: ['errorType'],
+    where: {
+      crawlResult: { userId: req.user.id }
+    },
+    _count: { id: true },
+    orderBy: {
+      _count: { id: 'desc' }
+    }
   });
 
-  // Get recent broken links
-  const recentBrokenLinks = await BrokenLink.findAll({
-    include: [{
-      model: CrawlResult,
-      as: 'crawlResult',
-      where: { userId: req.user.id },
-      attributes: [],
-      include: [{
-        model: Website,
-        as: 'website',
-        attributes: ['name', 'url']
-      }]
-    }],
-    order: [['createdAt', 'DESC']],
-    limit: 20,
-    attributes: ['id', 'url', 'sourceUrl', 'errorType', 'statusCode', 'createdAt']
+  const recentBrokenLinks = await prisma.brokenLink.findMany({
+    where: {
+      crawlResult: { userId: req.user.id }
+    },
+    select: {
+      id: true,
+      url: true,
+      sourceUrl: true,
+      errorType: true,
+      statusCode: true,
+      createdAt: true,
+      crawlResult: {
+        select: {
+          website: {
+            select: { name: true, url: true }
+          }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 20
   });
 
   res.json({
@@ -324,7 +332,7 @@ router.get('/broken-links-summary', asyncHandler(async (req, res) => {
     data: {
       summary: brokenLinksSummary.map(item => ({
         errorType: item.errorType,
-        count: parseInt(item.dataValues.count)
+        count: item._count.id
       })),
       recentBrokenLinks
     }
@@ -375,61 +383,51 @@ router.get('/crawl-performance', [
   const days = parseInt(req.query.days) || 30;
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);
+  const userId = req.user.id;
 
-  // Get crawl performance data
-  const performanceData = await CrawlResult.findAll({
-    where: {
-      userId: req.user.id,
-      status: 'completed',
-      createdAt: {
-        [Op.gte]: startDate
-      }
-    },
-    attributes: [
-      [require('sequelize').fn('DATE', require('sequelize').col('createdAt')), 'date'],
-      [require('sequelize').fn('AVG', require('sequelize').col('averageResponseTime')), 'avgResponseTime'],
-      [require('sequelize').fn('AVG', require('sequelize').col('totalLinksChecked')), 'avgLinksChecked'],
-      [require('sequelize').fn('AVG', require('sequelize').col('brokenLinksFound')), 'avgBrokenLinks'],
-      [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'crawlCount']
-    ],
-    group: [require('sequelize').fn('DATE', require('sequelize').col('createdAt'))],
-    order: [[require('sequelize').fn('DATE', require('sequelize').col('createdAt')), 'ASC']]
-  });
+  const performanceData = await prisma.$queryRaw`
+    SELECT DATE("createdAt") as date,
+           AVG("averageResponseTime") as "avgResponseTime",
+           AVG("totalLinksChecked") as "avgLinksChecked",
+           AVG("brokenLinksFound") as "avgBrokenLinks",
+           COUNT(id)::int as "crawlCount"
+    FROM crawl_results
+    WHERE "userId" = ${userId}::uuid
+      AND status = 'completed'
+      AND "createdAt" >= ${startDate}
+    GROUP BY DATE("createdAt")
+    ORDER BY date ASC
+  `;
 
-  // Get overall performance metrics
-  const overallMetrics = await CrawlResult.findOne({
-    where: {
-      userId: req.user.id,
-      status: 'completed',
-      createdAt: {
-        [Op.gte]: startDate
-      }
-    },
-    attributes: [
-      [require('sequelize').fn('AVG', require('sequelize').col('averageResponseTime')), 'avgResponseTime'],
-      [require('sequelize').fn('MIN', require('sequelize').col('averageResponseTime')), 'minResponseTime'],
-      [require('sequelize').fn('MAX', require('sequelize').col('averageResponseTime')), 'maxResponseTime'],
-      [require('sequelize').fn('SUM', require('sequelize').col('totalLinksChecked')), 'totalLinksChecked'],
-      [require('sequelize').fn('SUM', require('sequelize').col('brokenLinksFound')), 'totalBrokenLinks']
-    ]
-  });
+  const overallRows = await prisma.$queryRaw`
+    SELECT AVG("averageResponseTime") as "avgResponseTime",
+           MIN("averageResponseTime") as "minResponseTime",
+           MAX("averageResponseTime") as "maxResponseTime",
+           SUM("totalLinksChecked")::int as "totalLinksChecked",
+           SUM("brokenLinksFound")::int as "totalBrokenLinks"
+    FROM crawl_results
+    WHERE "userId" = ${userId}::uuid
+      AND status = 'completed'
+      AND "createdAt" >= ${startDate}
+  `;
+  const overallMetrics = overallRows[0] || {};
 
   res.json({
     success: true,
     data: {
       performance: performanceData.map(item => ({
-        date: item.dataValues.date,
-        avgResponseTime: Math.round(parseFloat(item.dataValues.avgResponseTime) || 0),
-        avgLinksChecked: Math.round(parseFloat(item.dataValues.avgLinksChecked) || 0),
-        avgBrokenLinks: Math.round(parseFloat(item.dataValues.avgBrokenLinks) || 0),
-        crawlCount: parseInt(item.dataValues.crawlCount)
+        date: item.date,
+        avgResponseTime: Math.round(parseFloat(item.avgResponseTime) || 0),
+        avgLinksChecked: Math.round(parseFloat(item.avgLinksChecked) || 0),
+        avgBrokenLinks: Math.round(parseFloat(item.avgBrokenLinks) || 0),
+        crawlCount: parseInt(item.crawlCount)
       })),
       overall: {
-        avgResponseTime: Math.round(parseFloat(overallMetrics?.dataValues?.avgResponseTime) || 0),
-        minResponseTime: Math.round(parseFloat(overallMetrics?.dataValues?.minResponseTime) || 0),
-        maxResponseTime: Math.round(parseFloat(overallMetrics?.dataValues?.maxResponseTime) || 0),
-        totalLinksChecked: parseInt(overallMetrics?.dataValues?.totalLinksChecked) || 0,
-        totalBrokenLinks: parseInt(overallMetrics?.dataValues?.totalBrokenLinks) || 0
+        avgResponseTime: Math.round(parseFloat(overallMetrics.avgResponseTime) || 0),
+        minResponseTime: Math.round(parseFloat(overallMetrics.minResponseTime) || 0),
+        maxResponseTime: Math.round(parseFloat(overallMetrics.maxResponseTime) || 0),
+        totalLinksChecked: parseInt(overallMetrics.totalLinksChecked) || 0,
+        totalBrokenLinks: parseInt(overallMetrics.totalBrokenLinks) || 0
       }
     }
   });
@@ -439,16 +437,15 @@ router.get('/crawl-performance', [
 // @desc    Get website distribution by category
 // @access  Private
 router.get('/website-categories', asyncHandler(async (req, res) => {
-  const categoryDistribution = await Website.findAll({
+  const categoryDistribution = await prisma.website.groupBy({
+    by: ['category'],
     where: { userId: req.user.id },
-    attributes: [
-      'category',
-      [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'count'],
-      [require('sequelize').fn('AVG', require('sequelize').col('healthScore')), 'avgHealthScore'],
-      [require('sequelize').fn('SUM', require('sequelize').col('brokenLinks')), 'totalBrokenLinks']
-    ],
-    group: ['category'],
-    order: [[require('sequelize').fn('COUNT', require('sequelize').col('id')), 'DESC']]
+    _count: { id: true },
+    _avg: { healthScore: true },
+    _sum: { brokenLinks: true },
+    orderBy: {
+      _count: { id: 'desc' }
+    }
   });
 
   res.json({
@@ -456,9 +453,9 @@ router.get('/website-categories', asyncHandler(async (req, res) => {
     data: {
       categories: categoryDistribution.map(item => ({
         category: item.category,
-        count: parseInt(item.dataValues.count),
-        avgHealthScore: Math.round(parseFloat(item.dataValues.avgHealthScore) * 100) / 100,
-        totalBrokenLinks: parseInt(item.dataValues.totalBrokenLinks) || 0
+        count: item._count.id,
+        avgHealthScore: Math.round(parseFloat(item._avg.healthScore || 0) * 100) / 100,
+        totalBrokenLinks: item._sum.brokenLinks || 0
       }))
     }
   });
@@ -471,14 +468,18 @@ router.get('/alerts', asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const alerts = [];
 
-  // Check for websites with critical health scores
-  const criticalWebsites = await Website.findAll({
+  const criticalWebsites = await prisma.website.findMany({
     where: {
       userId,
-      healthScore: { [Op.lt]: 50 },
+      healthScore: { lt: 50 },
       isActive: true
     },
-    attributes: ['id', 'name', 'healthScore', 'brokenLinks']
+    select: {
+      id: true,
+      name: true,
+      healthScore: true,
+      brokenLinks: true
+    }
   });
 
   criticalWebsites.forEach(website => {
@@ -492,20 +493,23 @@ router.get('/alerts', asyncHandler(async (req, res) => {
     });
   });
 
-  // Check for websites that haven't been crawled recently
   const staleCrawlThreshold = new Date();
-  staleCrawlThreshold.setDate(staleCrawlThreshold.getDate() - 14); // 14 days
+  staleCrawlThreshold.setDate(staleCrawlThreshold.getDate() - 14);
 
-  const staleWebsites = await Website.findAll({
+  const staleWebsites = await prisma.website.findMany({
     where: {
       userId,
       isActive: true,
-      [Op.or]: [
+      OR: [
         { lastCrawledAt: null },
-        { lastCrawledAt: { [Op.lt]: staleCrawlThreshold } }
+        { lastCrawledAt: { lt: staleCrawlThreshold } }
       ]
     },
-    attributes: ['id', 'name', 'lastCrawledAt']
+    select: {
+      id: true,
+      name: true,
+      lastCrawledAt: true
+    }
   });
 
   staleWebsites.forEach(website => {
@@ -519,21 +523,23 @@ router.get('/alerts', asyncHandler(async (req, res) => {
     });
   });
 
-  // Check for recent failed crawls
-  const recentFailedCrawls = await CrawlResult.findAll({
+  const recentFailedCrawls = await prisma.crawlResult.findMany({
     where: {
       userId,
       status: 'failed',
       createdAt: {
-        [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+        gte: new Date(Date.now() - 24 * 60 * 60 * 1000)
       }
     },
-    include: [{
-      model: Website,
-      as: 'website',
-      attributes: ['name']
-    }],
-    attributes: ['id', 'websiteId', 'errorMessage', 'createdAt']
+    select: {
+      id: true,
+      websiteId: true,
+      errorMessage: true,
+      createdAt: true,
+      website: {
+        select: { name: true }
+      }
+    }
   });
 
   recentFailedCrawls.forEach(crawl => {
@@ -548,7 +554,6 @@ router.get('/alerts', asyncHandler(async (req, res) => {
     });
   });
 
-  // Sort alerts by severity and date
   const severityOrder = { high: 3, medium: 2, low: 1 };
   alerts.sort((a, b) => {
     if (severityOrder[a.severity] !== severityOrder[b.severity]) {
@@ -560,7 +565,7 @@ router.get('/alerts', asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: {
-      alerts: alerts.slice(0, 20), // Limit to 20 most important alerts
+      alerts: alerts.slice(0, 20),
       summary: {
         critical: alerts.filter(a => a.severity === 'high').length,
         warning: alerts.filter(a => a.severity === 'medium').length,

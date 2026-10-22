@@ -1,3 +1,8 @@
+const {
+  PrismaClientKnownRequestError,
+  PrismaClientValidationError,
+  PrismaClientInitializationError,
+} = require('@prisma/client/runtime/library');
 const config = require('../../config/config');
 
 const errorHandler = (err, req, res, next) => {
@@ -15,37 +20,50 @@ const errorHandler = (err, req, res, next) => {
     requestId: req.id
   });
 
-  // Sequelize validation error
-  if (err.name === 'SequelizeValidationError') {
-    const message = err.errors.map(error => error.message).join(', ');
+  // Prisma validation error
+  if (err instanceof PrismaClientValidationError) {
     error = {
-      message,
+      message: err.message,
       statusCode: 400,
       code: 'VALIDATION_ERROR'
     };
   }
 
-  // Sequelize unique constraint error
-  if (err.name === 'SequelizeUniqueConstraintError') {
-    const field = err.errors[0].path;
-    error = {
-      message: `${field} already exists`,
-      statusCode: 409,
-      code: 'DUPLICATE_ENTRY'
-    };
+  // Prisma known request errors
+  if (err instanceof PrismaClientKnownRequestError) {
+    // Unique constraint violation
+    if (err.code === 'P2002') {
+      const field = Array.isArray(err.meta?.target)
+        ? err.meta.target[0]
+        : err.meta?.target || 'field';
+      error = {
+        message: `${field} already exists`,
+        statusCode: 409,
+        code: 'DUPLICATE_ENTRY'
+      };
+    }
+
+    // Foreign key constraint failure
+    if (err.code === 'P2003') {
+      error = {
+        message: 'Referenced resource not found',
+        statusCode: 400,
+        code: 'FOREIGN_KEY_ERROR'
+      };
+    }
+
+    // Record not found
+    if (err.code === 'P2025') {
+      error = {
+        message: 'Resource not found',
+        statusCode: 404,
+        code: 'NOT_FOUND'
+      };
+    }
   }
 
-  // Sequelize foreign key constraint error
-  if (err.name === 'SequelizeForeignKeyConstraintError') {
-    error = {
-      message: 'Referenced resource not found',
-      statusCode: 400,
-      code: 'FOREIGN_KEY_ERROR'
-    };
-  }
-
-  // Sequelize database connection error
-  if (err.name === 'SequelizeConnectionError') {
+  // Prisma database connection / initialization error
+  if (err instanceof PrismaClientInitializationError) {
     error = {
       message: 'Database connection failed',
       statusCode: 500,
@@ -108,12 +126,10 @@ const errorHandler = (err, req, res, next) => {
   }
 
   // Add validation details if available
-  if (err.name === 'SequelizeValidationError' && err.errors) {
-    errorResponse.validationErrors = err.errors.map(error => ({
-      field: error.path,
-      message: error.message,
-      value: error.value
-    }));
+  if (err instanceof PrismaClientValidationError) {
+    errorResponse.validationErrors = [{
+      message: err.message
+    }];
   }
 
   res.status(statusCode).json(errorResponse);
