@@ -42,6 +42,7 @@ module.exports = {
 
   // Crawler Configuration
   crawler: {
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     delay: parseInt(process.env.CRAWLER_DELAY) || 200, // Reduced from 1000ms
     timeout: parseInt(process.env.CRAWLER_TIMEOUT) || 10000, // Reduced from 30000ms
     userAgent: process.env.CRAWLER_USER_AGENT || 'DeadLinkWatchdog/1.0',

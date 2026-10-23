@@ -26,6 +26,9 @@ class WebCrawler {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
         headless: true,
+        ...(config.crawler.executablePath
+          ? { executablePath: config.crawler.executablePath }
+          : {}),
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -72,7 +75,7 @@ class WebCrawler {
       // Extract all links from the page (enhanced extraction)
       const pageLinks = await page.evaluate(() => {
         const links = [];
-        
+
         // 1. Extract anchor links
         const anchors = Array.from(document.querySelectorAll('a[href]'));
         anchors.forEach((anchor) => {
@@ -81,10 +84,10 @@ class WebCrawler {
             text: anchor.textContent.trim(),
             sourceUrl: window.location.href,
             type: 'anchor',
-            element: 'a'
+            element: 'a',
           });
         });
-        
+
         // 2. Extract image src attributes
         const images = Array.from(document.querySelectorAll('img[src]'));
         images.forEach((img) => {
@@ -93,10 +96,10 @@ class WebCrawler {
             text: img.alt || img.title || 'image',
             sourceUrl: window.location.href,
             type: 'image',
-            element: 'img'
+            element: 'img',
           });
         });
-        
+
         // 3. Extract CSS background-image URLs
         const elementsWithBg = Array.from(document.querySelectorAll('*'));
         elementsWithBg.forEach((element) => {
@@ -112,18 +115,18 @@ class WebCrawler {
               } else if (!url.startsWith('http')) {
                 url = new URL(url, window.location.href).href;
               }
-              
+
               links.push({
                 url: url,
                 text: `background-image in ${element.tagName.toLowerCase()}`,
                 sourceUrl: window.location.href,
                 type: 'background-image',
-                element: element.tagName.toLowerCase()
+                element: element.tagName.toLowerCase(),
               });
             }
           }
         });
-        
+
         // 4. Extract form action URLs
         const forms = Array.from(document.querySelectorAll('form[action]'));
         forms.forEach((form) => {
@@ -132,22 +135,24 @@ class WebCrawler {
             text: `form action in ${form.tagName.toLowerCase()}`,
             sourceUrl: window.location.href,
             type: 'form-action',
-            element: 'form'
+            element: 'form',
           });
         });
-        
+
         // 5. Extract link elements (CSS, favicon, etc.)
-        const linkElements = Array.from(document.querySelectorAll('link[href]'));
+        const linkElements = Array.from(
+          document.querySelectorAll('link[href]')
+        );
         linkElements.forEach((link) => {
           links.push({
             url: link.href,
             text: link.rel || 'link element',
             sourceUrl: window.location.href,
             type: 'link-element',
-            element: 'link'
+            element: 'link',
           });
         });
-        
+
         // 6. Extract script src attributes
         const scripts = Array.from(document.querySelectorAll('script[src]'));
         scripts.forEach((script) => {
@@ -156,10 +161,10 @@ class WebCrawler {
             text: 'script source',
             sourceUrl: window.location.href,
             type: 'script',
-            element: 'script'
+            element: 'script',
           });
         });
-        
+
         return links;
       });
 
@@ -170,10 +175,12 @@ class WebCrawler {
       for (const link of pageLinks) {
         // Limit links per site in fast mode
         if (this.fastMode && processedCount >= this.maxLinksPerSite) {
-          console.log(`Fast mode: Limiting to ${this.maxLinksPerSite} links per site`);
+          console.log(
+            `Fast mode: Limiting to ${this.maxLinksPerSite} links per site`
+          );
           break;
         }
-        
+
         try {
           const linkUrl = new URL(link.url);
           // Only include http/https links
@@ -182,7 +189,7 @@ class WebCrawler {
             if (this.fastMode && this.shouldSkipInFastMode(link)) {
               continue;
             }
-            
+
             links.add({
               url: link.url,
               text: link.text,
@@ -288,20 +295,22 @@ class WebCrawler {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
+        DNT: '1',
+        Connection: 'keep-alive',
         'Cache-Control': 'max-age=0',
       };
 
       // Set appropriate Accept header based on link type
       if (linkType === 'image') {
-        headers.Accept = 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+        headers.Accept =
+          'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
       } else if (linkType === 'script') {
         headers.Accept = '*/*';
       } else if (linkType === 'link-element') {
         headers.Accept = 'text/css,*/*;q=0.1';
       } else {
-        headers.Accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8';
+        headers.Accept =
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8';
         headers['Upgrade-Insecure-Requests'] = '1';
         headers['Sec-Fetch-Dest'] = 'document';
         headers['Sec-Fetch-Mode'] = 'navigate';
@@ -309,8 +318,9 @@ class WebCrawler {
       }
 
       // Use HEAD request for images and scripts to be more efficient
-      const method = (linkType === 'image' || linkType === 'script') ? 'head' : 'get';
-      
+      const method =
+        linkType === 'image' || linkType === 'script' ? 'head' : 'get';
+
       const response = await axios({
         method,
         url,
@@ -340,7 +350,8 @@ class WebCrawler {
           // Social media 403 is usually working but blocks bots
           result.status = 'success';
           result.errorType = 'social_media_block';
-          result.errorMessage = 'Social media link (blocks automated access but works in browser)';
+          result.errorMessage =
+            'Social media link (blocks automated access but works in browser)';
         } else {
           result.status = 'broken';
           result.errorType = '403_forbidden';
@@ -355,7 +366,8 @@ class WebCrawler {
           // Social media links that return 400 are usually working but block bots
           result.status = 'success';
           result.errorType = 'social_media_block';
-          result.errorMessage = 'Social media link (blocks automated access but works in browser)';
+          result.errorMessage =
+            'Social media link (blocks automated access but works in browser)';
         } else {
           result.status = 'broken';
           result.errorType = '400_bad_request';
@@ -437,9 +449,11 @@ class WebCrawler {
       // Implement retry logic for transient errors
       if (this.shouldRetry(error, retryCount)) {
         const retryDelay = this.calculateRetryDelay(retryCount);
-        console.log(`Retrying ${url} in ${retryDelay}ms (attempt ${retryCount + 1})`);
-        
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        console.log(
+          `Retrying ${url} in ${retryDelay}ms (attempt ${retryCount + 1})`
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
         return this.checkLink(url, sourceUrl, retryCount + 1);
       }
     }
@@ -457,12 +471,12 @@ class WebCrawler {
   isValidUrl(url) {
     try {
       const urlObj = new URL(url);
-      
+
       // Check protocol
       if (!['http:', 'https:'].includes(urlObj.protocol)) {
         return false;
       }
-      
+
       // Check for suspicious patterns
       const suspiciousPatterns = [
         /javascript:/i,
@@ -475,21 +489,21 @@ class WebCrawler {
         /whatsapp:/i,
         /telegram:/i,
       ];
-      
-      if (suspiciousPatterns.some(pattern => pattern.test(url))) {
+
+      if (suspiciousPatterns.some((pattern) => pattern.test(url))) {
         return false;
       }
-      
+
       // Check for valid hostname
       if (!urlObj.hostname || urlObj.hostname.length === 0) {
         return false;
       }
-      
+
       // Check for localhost/private IPs (unless in development)
       if (this.isPrivateOrLocalhost(urlObj.hostname)) {
         return false;
       }
-      
+
       return true;
     } catch {
       return false;
@@ -506,8 +520,8 @@ class WebCrawler {
       /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
       /^0\.0\.0\.0$/,
     ];
-    
-    return privatePatterns.some(pattern => pattern.test(hostname));
+
+    return privatePatterns.some((pattern) => pattern.test(hostname));
   }
 
   // Determine if a request should be retried
@@ -515,7 +529,7 @@ class WebCrawler {
     if (retryCount >= this.maxRetries) {
       return false;
     }
-    
+
     // Retry on transient errors
     const retryableErrors = [
       'ECONNRESET',
@@ -527,22 +541,25 @@ class WebCrawler {
       'EAI_AGAIN',
       'dns_temporary_failure',
     ];
-    
+
     // Retry on 5xx server errors
     if (error.response && error.response.status >= 500) {
       return true;
     }
-    
+
     // Retry on rate limiting (429)
     if (error.response && error.response.status === 429) {
       return true;
     }
-    
+
     // Retry on network errors
-    if (retryableErrors.includes(error.code) || retryableErrors.includes(error.errorType)) {
+    if (
+      retryableErrors.includes(error.code) ||
+      retryableErrors.includes(error.errorType)
+    ) {
       return true;
     }
-    
+
     return false;
   }
 
@@ -551,7 +568,7 @@ class WebCrawler {
     const baseDelay = this.retryDelay;
     const maxDelay = 10000; // 10 seconds
     const delay = Math.min(baseDelay * Math.pow(2, retryCount), maxDelay);
-    
+
     // Add jitter to prevent thundering herd
     const jitter = Math.random() * 0.1 * delay;
     return Math.floor(delay + jitter);
@@ -593,11 +610,11 @@ class WebCrawler {
     // Process links in batches to control concurrency
     for (let i = 0; i < links.length; i += maxConcurrent) {
       const batch = links.slice(i, i + maxConcurrent);
-      
+
       // Process batch concurrently
       const batchPromises = batch.map(async (link, batchIndex) => {
         const globalIndex = i + batchIndex;
-        
+
         try {
           // Enhanced rate limiting per domain
           const domain = this.extractDomain(link.url);
@@ -605,9 +622,14 @@ class WebCrawler {
             await this.enforceRateLimit(domain);
           }
 
-          const result = await this.checkLink(link.url, link.sourceUrl, 0, link.type);
+          const result = await this.checkLink(
+            link.url,
+            link.sourceUrl,
+            0,
+            link.type
+          );
           result.linkText = link.text;
-          
+
           if (onProgress) {
             onProgress({
               current: globalIndex + 1,
@@ -617,7 +639,7 @@ class WebCrawler {
               result,
             });
           }
-          
+
           return result;
         } catch (error) {
           const errorResult = {
@@ -628,7 +650,7 @@ class WebCrawler {
             errorMessage: error.message,
             errorType: 'other',
           };
-          
+
           if (onProgress) {
             onProgress({
               current: globalIndex + 1,
@@ -638,7 +660,7 @@ class WebCrawler {
               result: errorResult,
             });
           }
-          
+
           return errorResult;
         }
       });
@@ -646,10 +668,10 @@ class WebCrawler {
       // Wait for batch to complete
       const batchResults = await Promise.all(batchPromises);
       results.push(...batchResults);
-      
+
       // Add delay between batches to be respectful to servers
       if (i + maxConcurrent < links.length) {
-        await new Promise(resolve => setTimeout(resolve, this.delay));
+        await new Promise((resolve) => setTimeout(resolve, this.delay));
       }
     }
 
@@ -672,10 +694,10 @@ class WebCrawler {
     if (this.fastMode) {
       return;
     }
-    
+
     const now = Date.now();
     const rateLimiter = this.domainRateLimiters.get(domain);
-    
+
     if (!rateLimiter) {
       this.domainRateLimiters.set(domain, {
         requests: [now],
@@ -683,28 +705,31 @@ class WebCrawler {
       });
       return;
     }
-    
+
     // Clean up old requests (older than 1 second)
     const oneSecondAgo = now - 1000;
-    rateLimiter.requests = rateLimiter.requests.filter(time => time > oneSecondAgo);
-    
+    rateLimiter.requests = rateLimiter.requests.filter(
+      (time) => time > oneSecondAgo
+    );
+
     // Check if we're within rate limit
     if (rateLimiter.requests.length >= this.rateLimitPerDomain) {
       const oldestRequest = Math.min(...rateLimiter.requests);
       const waitTime = 1000 - (now - oldestRequest);
-      
+
       if (waitTime > 0) {
         console.log(`Rate limiting ${domain}: waiting ${waitTime}ms`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
-    
+
     // Add current request
     rateLimiter.requests.push(now);
     rateLimiter.lastCleanup = now;
-    
+
     // Periodic cleanup of rate limiter map
-    if (now - rateLimiter.lastCleanup > 60000) { // 1 minute
+    if (now - rateLimiter.lastCleanup > 60000) {
+      // 1 minute
       this.cleanupRateLimiters();
     }
   }
@@ -716,17 +741,17 @@ class WebCrawler {
     if (skipTypes.includes(link.type)) {
       return true;
     }
-    
+
     // Skip image links with very long URLs (likely dynamic)
     if (link.type === 'image' && link.url.length > 200) {
       return true;
     }
-    
+
     // Skip anchor links to same page
     if (link.type === 'anchor' && link.url.includes('#')) {
       return true;
     }
-    
+
     return false;
   }
 
@@ -734,7 +759,8 @@ class WebCrawler {
   cleanupRateLimiters() {
     const now = Date.now();
     for (const [domain, limiter] of this.domainRateLimiters.entries()) {
-      if (now - limiter.lastCleanup > 300000) { // 5 minutes
+      if (now - limiter.lastCleanup > 300000) {
+        // 5 minutes
         this.domainRateLimiters.delete(domain);
       }
     }
@@ -744,7 +770,7 @@ class WebCrawler {
   isCircuitOpen(domain) {
     const breaker = this.circuitBreakers.get(domain);
     if (!breaker) return false;
-    
+
     if (breaker.state === 'OPEN') {
       // Check if we should try to close the circuit
       if (Date.now() - breaker.lastFailureTime > breaker.timeout) {
@@ -754,7 +780,7 @@ class WebCrawler {
       }
       return true;
     }
-    
+
     return false;
   }
 
@@ -777,7 +803,9 @@ class WebCrawler {
 
     if (breaker.failureCount >= breaker.failureThreshold) {
       breaker.state = 'OPEN';
-      console.log(`Circuit breaker for ${domain} opened after ${breaker.failureCount} failures`);
+      console.log(
+        `Circuit breaker for ${domain} opened after ${breaker.failureCount} failures`
+      );
     }
   }
 
@@ -786,12 +814,14 @@ class WebCrawler {
     if (!breaker) return;
 
     breaker.successCount++;
-    
+
     if (breaker.state === 'HALF_OPEN' && breaker.successCount >= 3) {
       breaker.state = 'CLOSED';
       breaker.failureCount = 0;
       breaker.successCount = 0;
-      console.log(`Circuit breaker for ${domain} closed after successful requests`);
+      console.log(
+        `Circuit breaker for ${domain} closed after successful requests`
+      );
     }
   }
 
@@ -799,13 +829,13 @@ class WebCrawler {
   getCachedResult(url) {
     const cached = this.requestCache.get(url);
     if (!cached) return null;
-    
+
     // Check if cache is still valid
     if (Date.now() - cached.timestamp > this.cacheTimeout) {
       this.requestCache.delete(url);
       return null;
     }
-    
+
     return cached.result;
   }
 
@@ -814,7 +844,7 @@ class WebCrawler {
       result: { ...result },
       timestamp: Date.now(),
     });
-    
+
     // Clean up old cache entries periodically
     if (this.requestCache.size > 1000) {
       this.cleanupCache();
@@ -835,7 +865,7 @@ class WebCrawler {
     const crawlId = `crawl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     console.log(`[${crawlId}] Starting crawl for: ${url}`);
-    
+
     const crawlResult = {
       url,
       crawlId,
@@ -885,13 +915,13 @@ class WebCrawler {
           if (progress.result.errorType === 'circuit_breaker_open') {
             crawlResult.metrics.circuitBreakerTrips++;
           }
-          
+
           const domain = this.extractDomain(progress.result.url);
           if (domain) {
             crawlResult.metrics.domainsChecked.add(domain);
           }
         }
-        
+
         if (onProgress) {
           onProgress({
             phase: 'checking',
@@ -928,10 +958,12 @@ class WebCrawler {
           : 0;
 
       // Convert Set to Array for JSON serialization
-      crawlResult.metrics.domainsChecked = Array.from(crawlResult.metrics.domainsChecked);
-      
+      crawlResult.metrics.domainsChecked = Array.from(
+        crawlResult.metrics.domainsChecked
+      );
+
       crawlResult.endTime = new Date();
-      
+
       // Log crawl completion with metrics
       const duration = crawlResult.endTime - crawlResult.startTime;
       console.log(`[${crawlId}] Crawl completed in ${duration}ms:`, {
