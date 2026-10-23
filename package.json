@@ -17,6 +17,7 @@
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
     "db:drop-tables": "node scripts/drop-tables.js",
+    "seed:admin": "prisma migrate deploy && node scripts/seed-admin.js",
     "test": "node test-setup.js",
     "test:watch": "nodemon test-setup.js",
     "redis:flush": "redis-cli FLUSHALL"
