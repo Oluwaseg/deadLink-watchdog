@@ -11,72 +11,6 @@ const {
 const router = express.Router();
 const queueService = new QueueService();
 
-/**
- * @swagger
- * tags:
- *   name: Websites
- *   description: Website management and monitoring
- */
-
-/**
- * @swagger
- * /api/websites:
- *   get:
- *     tags: [Websites]
- *     summary: Get all websites with pagination and filtering
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *           default: 1
- *         description: Page number for pagination
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 10
- *         description: Number of items per page
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *           enum: [active, inactive]
- *         description: Filter by website status
- *       - in: query
- *         name: category
- *         schema:
- *           type: string
- *         description: Filter by website category
- *     responses:
- *       200:
- *         description: List of websites retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     websites:
- *                       type: array
- *                       items:
- *                         type: object
- *                     total:
- *                       type: integer
- *                     page:
- *                       type: integer
- *                     totalPages:
- *                       type: integer
- *       401:
- *         description: Unauthorized
- */
-
 // Validation middleware
 const validateWebsite = [
   body('url')
@@ -235,42 +169,6 @@ router.get(
   })
 );
 
-/**
- * @swagger
- * /api/websites/{id}:
- *   get:
- *     tags: [Websites]
- *     summary: Get a specific website by ID
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Website ID
- *     responses:
- *       200:
- *         description: Website details retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     website:
- *                       type: object
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Website not found
- */
-
 // @route   GET /api/websites/:id
 // @desc    Get a specific website
 // @access  Private
@@ -302,70 +200,6 @@ router.get(
     });
   })
 );
-
-/**
- * @swagger
- * /api/websites:
- *   post:
- *     tags: [Websites]
- *     summary: Add a new website to monitor
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - url
- *               - name
- *             properties:
- *               url:
- *                 type: string
- *                 format: uri
- *               name:
- *                 type: string
- *               category:
- *                 type: string
- *               crawlSchedule:
- *                 type: object
- *                 properties:
- *                   frequency:
- *                     type: string
- *                     enum: [daily, weekly, monthly]
- *                   time:
- *                     type: string
- *                     format: time
- *               crawlOptions:
- *                 type: object
- *                 properties:
- *                   maxPages:
- *                     type: integer
- *                   maxDepth:
- *                     type: integer
- *                   followExternalLinks:
- *                     type: boolean
- *     responses:
- *       201:
- *         description: Website added successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     website:
- *                       type: object
- *       400:
- *         description: Validation error
- *       401:
- *         description: Unauthorized
- */
 
 // @route   POST /api/websites
 // @desc    Create a new website
@@ -430,75 +264,6 @@ router.post(
     });
   })
 );
-
-/**
- * @swagger
- * /api/websites/{id}:
- *   put:
- *     tags: [Websites]
- *     summary: Update website details
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Website ID
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               name:
- *                 type: string
- *               category:
- *                 type: string
- *               isActive:
- *                 type: boolean
- *               crawlSchedule:
- *                 type: object
- *                 properties:
- *                   frequency:
- *                     type: string
- *                     enum: [daily, weekly, monthly]
- *                   time:
- *                     type: string
- *                     format: time
- *               crawlOptions:
- *                 type: object
- *                 properties:
- *                   maxPages:
- *                     type: integer
- *                   maxDepth:
- *                     type: integer
- *                   followExternalLinks:
- *                     type: boolean
- *     responses:
- *       200:
- *         description: Website updated successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     website:
- *                       type: object
- *       400:
- *         description: Validation error
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Website not found
- */
 
 // @route   PUT /api/websites/:id
 // @desc    Update a website
@@ -581,39 +346,6 @@ router.put(
   })
 );
 
-/**
- * @swagger
- * /api/websites/{id}:
- *   delete:
- *     tags: [Websites]
- *     summary: Delete a website
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Website ID
- *     responses:
- *       200:
- *         description: Website deleted successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Website not found
- */
-
 // @route   DELETE /api/websites/:id
 // @desc    Delete a website
 // @access  Private
@@ -653,42 +385,6 @@ router.delete(
     });
   })
 );
-
-/**
- * @swagger
- * /api/websites/{id}/crawl-now:
- *   post:
- *     tags: [Websites]
- *     summary: Manually trigger a crawl for a website
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Website ID
- *     responses:
- *       202:
- *         description: Crawl job queued successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     jobId:
- *                       type: string
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Website not found
- */
 
 // @route   POST /api/websites/:id/crawl
 // @desc    Trigger manual crawl for a website
@@ -735,62 +431,6 @@ router.post(
     });
   })
 );
-
-/**
- * @swagger
- * /api/websites/{id}/crawl-history:
- *   get:
- *     tags: [Websites]
- *     summary: Get crawl history for a website
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Website ID
- *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *           default: 1
- *         description: Page number for pagination
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 10
- *         description: Number of items per page
- *     responses:
- *       200:
- *         description: Crawl history retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     crawls:
- *                       type: array
- *                       items:
- *                         type: object
- *                     total:
- *                       type: integer
- *                     page:
- *                       type: integer
- *                     totalPages:
- *                       type: integer
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Website not found
- */
 
 // @route   GET /api/websites/:id/broken-links
 // @desc    Get broken links for a website

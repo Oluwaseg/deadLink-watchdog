@@ -13,56 +13,6 @@ const emailService = require('../services/email');
 
 const router = express.Router();
 
-/**
- * @swagger
- * tags:
- *   name: Authentication
- *   description: User authentication and account management
- */
-
-/**
- * @swagger
- * /api/auth/register:
- *   post:
- *     tags: [Authentication]
- *     summary: Register a new user
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *               - password
- *               - name
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *               password:
- *                 type: string
- *                 minLength: 8
- *               name:
- *                 type: string
- *     responses:
- *       201:
- *         description: User registered successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       409:
- *         description: Email already exists
- */
-
 // Validation middleware
 const validateRegistration = [
   body('email')
@@ -174,50 +124,6 @@ router.post(
   })
 );
 
-/**
- * @swagger
- * /api/auth/login:
- *   post:
- *     tags: [Authentication]
- *     summary: Login user
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *               - password
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *               password:
- *                 type: string
- *     responses:
- *       200:
- *         description: Login successful
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     token:
- *                       type: string
- *                     user:
- *                       type: object
- *       400:
- *         description: Validation error
- *       401:
- *         description: Invalid credentials
- */
-
 // @route   POST /api/auth/login
 // @desc    Login user
 // @access  Public
@@ -284,45 +190,6 @@ router.post(
     });
   })
 );
-
-/**
- * @swagger
- * /api/auth/verify-email:
- *   post:
- *     tags: [Authentication]
- *     summary: Verify user email
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *               - verificationCode
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *               verificationCode:
- *                 type: string
- *     responses:
- *       200:
- *         description: Email verified successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       404:
- *         description: User not found
- */
 
 // @route   POST /api/auth/verify-email
 // @desc    Verify email with code
@@ -406,42 +273,6 @@ router.post(
   })
 );
 
-/**
- * @swagger
- * /api/auth/resend-verification:
- *   post:
- *     tags: [Authentication]
- *     summary: Resend verification email
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *     responses:
- *       200:
- *         description: Verification email sent
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       404:
- *         description: User not found
- */
-
 // @route   POST /api/auth/resend-verification
 // @desc    Resend verification email
 // @access  Public
@@ -508,33 +339,6 @@ router.post(
   })
 );
 
-/**
- * @swagger
- * /api/auth/refresh-token:
- *   post:
- *     tags: [Authentication]
- *     summary: Refresh access token
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Token refreshed successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     token:
- *                       type: string
- *       401:
- *         description: Invalid token
- */
-
 // @route   POST /api/auth/refresh
 // @desc    Refresh access token
 // @access  Public
@@ -587,33 +391,6 @@ router.post(
   })
 );
 
-/**
- * @swagger
- * /api/auth/profile:
- *   get:
- *     tags: [Authentication]
- *     summary: Get user profile
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: User profile retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     user:
- *                       type: object
- *       401:
- *         description: Unauthorized
- */
-
 // @route   GET /api/auth/me
 // @desc    Get current user profile
 // @access  Private
@@ -629,49 +406,6 @@ router.get(
     });
   })
 );
-
-/**
- * @swagger
- * /api/auth/profile:
- *   put:
- *     tags: [Authentication]
- *     summary: Update user profile
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - firstName
- *               - lastName
- *               - email
- *             properties:
- *               firstName:
- *                 type: string
- *               lastName:
- *                 type: string
- *               email:
- *                 type: string
- *     responses:
- *       200:
- *         description: Profile updated successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       401:
- *         description: Unauthorized
- */
 
 // @route   PUT /api/auth/profile
 // @desc    Update user profile
@@ -734,47 +468,6 @@ router.put(
   })
 );
 
-/**
- * @swagger
- * /api/auth/change-password:
- *   post:
- *     tags: [Authentication]
- *     summary: Change password
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - currentPassword
- *               - newPassword
- *             properties:
- *               currentPassword:
- *                 type: string
- *               newPassword:
- *                 type: string
- *                 minLength: 8
- *     responses:
- *       200:
- *         description: Password changed successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       401:
- *         description: Invalid current password
- */
-
 // @route   PUT /api/auth/change-password
 // @desc    Change user password
 // @access  Private
@@ -822,42 +515,6 @@ router.put(
     });
   })
 );
-
-/**
- * @swagger
- * /api/auth/forgot-password:
- *   post:
- *     tags: [Authentication]
- *     summary: Request password reset
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *     responses:
- *       200:
- *         description: Reset email sent
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       404:
- *         description: User not found
- */
 
 // @route   POST /api/auth/forgot-password
 // @desc    Send password reset email
@@ -920,49 +577,6 @@ router.post(
     });
   })
 );
-
-/**
- * @swagger
- * /api/auth/reset-password:
- *   post:
- *     tags: [Authentication]
- *     summary: Reset password
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - email
- *               - resetCode
- *               - newPassword
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *               resetCode:
- *                 type: string
- *               newPassword:
- *                 type: string
- *                 minLength: 8
- *     responses:
- *       200:
- *         description: Password reset successful
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 message:
- *                   type: string
- *       400:
- *         description: Validation error
- *       404:
- *         description: User not found
- */
 
 // @route   POST /api/auth/reset-password
 // @desc    Reset password using token

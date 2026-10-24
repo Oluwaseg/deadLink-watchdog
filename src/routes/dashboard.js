@@ -22,27 +22,108 @@ const checkValidation = (req, res, next) => {
   next();
 };
 
-/**
- * @swagger
- * tags:
+router.get(
+  '/overview',
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalWebsites,
+      activeWebsites,
+      totalCrawls,
+      recentCrawls,
+      totalBrokenLinks,
+      recentBrokenLinks,
+      websitesWithHealth,
+      recentActivity,
+    ] = await Promise.all([
+      prisma.website.count({ where: { userId } }),
+      prisma.website.count({ where: { userId, isActive: true } }),
+      prisma.crawlResult.count({ where: { userId } }),
+      prisma.crawlResult.count({
+        where: { userId, createdAt: { gte: sevenDaysAgo } },
+      }),
+      prisma.brokenLink.count({ where: { crawlResult: { userId } } }),
+      prisma.brokenLink.count({
+        where: {
+          createdAt: { gte: sevenDaysAgo },
+          crawlResult: { userId },
+        },
+      }),
+      prisma.website.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          name: true,
+          healthScore: true,
+          totalLinks: true,
+          brokenLinks: true,
+        },
+        orderBy: { healthScore: 'asc' },
+        take: 5,
+      }),
+      prisma.crawlResult.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          status: true,
+          brokenLinksFound: true,
+          totalLinksChecked: true,
+          createdAt: true,
+          website: { select: { name: true, url: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      }),
+    ]);
+
+    const averageHealthScore = websitesWithHealth.length
+      ? websitesWithHealth.reduce(
+          (sum, site) => sum + Number(site.healthScore),
+          0
+        ) / websitesWithHealth.length
+      : 100;
+
+    res.json({
+      success: true,
+      data: {
+        overview: {
+          totalWebsites,
+          activeWebsites,
+          totalCrawls,
+          recentCrawls,
+          totalBrokenLinks,
+          recentBrokenLinks,
+          averageHealthScore: Math.round(averageHealthScore * 100) / 100,
+        },
+        topIssues: websitesWithHealth,
+        recentActivity,
+      },
+    });
+  })
+);
+
 router.get(
   '/broken-links-summary',
   [
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
-    query('errorType').optional().isIn([
-      '404_not_found',
-      '403_forbidden',
-      '500_server_error',
-      'timeout',
-      'connection_error',
-      'connection_refused',
-      'dns_error',
-      'ssl_error',
-      'redirect_loop',
-      'too_many_redirects',
-      'other',
-    ]),
+    query('errorType')
+      .optional()
+      .isIn([
+        '404_not_found',
+        '403_forbidden',
+        '500_server_error',
+        'timeout',
+        'connection_error',
+        'connection_refused',
+        'dns_error',
+        'ssl_error',
+        'redirect_loop',
+        'too_many_redirects',
+        'other',
+      ]),
     query('isFixed').optional().isBoolean(),
     query('search').optional().isString().isLength({ max: 200 }),
   ],
@@ -51,35 +132,38 @@ router.get(
     const page = Number.parseInt(req.query.page, 10) || 1;
     const limit = Number.parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
+    const userId = req.user.id;
 
-    const brokenLinksSummary = await prisma.brokenLink.groupBy({
-      by: ['errorType'],
-      where: { crawlResult: { userId: req.user.id } },
-      _count: { id: true },
-      orderBy: { _count: { id: 'desc' } },
-    });
-
-    const where = {
-      crawlResult: { userId: req.user.id },
-      ...(req.query.errorType
-        ? { errorType: toPrismaErrorType(req.query.errorType) }
-        : {}),
-      ...(req.query.isFixed !== undefined
-        ? { isFixed: req.query.isFixed === 'true' }
-        : {}),
-      ...(req.query.search
-        ? {
-            OR: [
-              { url: { contains: req.query.search, mode: 'insensitive' } },
-              { sourceUrl: { contains: req.query.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
-
-    const [recentBrokenLinks, count] = await Promise.all([
+    const [summary, recentBrokenLinks, total] = await Promise.all([
+      prisma.brokenLink.groupBy({
+        by: ['errorType'],
+        where: { crawlResult: { userId } },
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+      }),
       prisma.brokenLink.findMany({
-        where,
+        where: {
+          crawlResult: { userId },
+          ...(req.query.errorType
+            ? { errorType: toPrismaErrorType(req.query.errorType) }
+            : {}),
+          ...(req.query.isFixed !== undefined
+            ? { isFixed: req.query.isFixed === 'true' }
+            : {}),
+          ...(req.query.search
+            ? {
+                OR: [
+                  { url: { contains: req.query.search, mode: 'insensitive' } },
+                  {
+                    sourceUrl: {
+                      contains: req.query.search,
+                      mode: 'insensitive',
+                    },
+                  },
+                ],
+              }
+            : {}),
+        },
         select: {
           id: true,
           url: true,
@@ -94,13 +178,36 @@ router.get(
         skip,
         take: limit,
       }),
-      prisma.brokenLink.count({ where }),
+      prisma.brokenLink.count({
+        where: {
+          crawlResult: { userId },
+          ...(req.query.errorType
+            ? { errorType: toPrismaErrorType(req.query.errorType) }
+            : {}),
+          ...(req.query.isFixed !== undefined
+            ? { isFixed: req.query.isFixed === 'true' }
+            : {}),
+          ...(req.query.search
+            ? {
+                OR: [
+                  { url: { contains: req.query.search, mode: 'insensitive' } },
+                  {
+                    sourceUrl: {
+                      contains: req.query.search,
+                      mode: 'insensitive',
+                    },
+                  },
+                ],
+              }
+            : {}),
+        },
+      }),
     ]);
 
     res.json({
       success: true,
       data: {
-        summary: brokenLinksSummary.map((item) => ({
+        summary: summary.map((item) => ({
           errorType: fromPrismaErrorType(item.errorType),
           count: item._count.id,
         })),
@@ -108,101 +215,11 @@ router.get(
           ...link,
           errorType: fromPrismaErrorType(link.errorType),
         })),
-        pagination: {
-          page,
-          limit,
-          total: count,
-          pages: Math.ceil(count / limit),
-        },
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       },
     });
   })
 );
-      brokenLinks: true
-    },
-    orderBy: { healthScore: 'asc' },
-    take: 5
-  });
-
-  const recentActivity = await prisma.crawlResult.findMany({
-    where: { userId },
-    select: {
-      id: true,
-      status: true,
-      brokenLinksFound: true,
-      totalLinksChecked: true,
-      createdAt: true,
-      website: {
-        select: { name: true, url: true }
-      }
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 10
-  });
-
-  const avgHealthScore = websitesWithHealth.length > 0
-    ? websitesWithHealth.reduce((sum, site) => sum + parseFloat(site.healthScore), 0) / websitesWithHealth.length
-    : 100;
-
-  res.json({
-    success: true,
-    data: {
-      overview: {
-        totalWebsites,
-        activeWebsites,
-        totalCrawls,
-        recentCrawls,
-        totalBrokenLinks,
-        recentBrokenLinks,
-        averageHealthScore: Math.round(avgHealthScore * 100) / 100
-      },
-      topIssues: websitesWithHealth,
-      recentActivity
-    }
-  });
-}));
-
-/**
- * @swagger
- * /api/dashboard/health-scores:
- *   get:
- *     tags: [Dashboard]
- *     summary: Get health scores for all websites
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Health scores retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     websites:
- *                       type: array
- *                       items:
- *                         type: object
- *                     categories:
- *                       type: object
- *                       properties:
- *                         critical:
- *                           type: integer
- *                         warning:
- *                           type: integer
- *                         good:
- *                           type: integer
- *                         excellent:
- *                           type: integer
- *                     breakdown:
- *                       type: object
- *       401:
- *         description: Unauthorized
- */
 
 // @route   GET /api/dashboard/health-scores
 // @desc    Get health scores for all websites
@@ -252,44 +269,6 @@ router.get(
     });
   })
 );
-
-/**
- * @swagger
- * /api/dashboard/broken-links-summary:
- *   get:
- *     tags: [Dashboard]
- *     summary: Get broken links summary by error type
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Broken links summary retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     summary:
- *                       type: array
- *                       items:
- *                         type: object
- *                         properties:
- *                           errorType:
- *                             type: string
- *                           count:
- *                             type: integer
- *                     recentBrokenLinks:
- *                       type: array
- *                       items:
- *                         type: object
- *       401:
- *         description: Unauthorized
- */
 
 // @route   GET /api/dashboard/broken-links-summary
 // @desc    Get broken links summary by error type
@@ -390,41 +369,6 @@ router.get(
     });
   })
 );
-
-/**
- * @swagger
- * /api/dashboard/crawl-performance:
- *   get:
- *     tags: [Dashboard]
- *     summary: Get crawl performance metrics
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Crawl performance metrics retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     averageResponseTime:
- *                       type: number
- *                     averagePagesPerCrawl:
- *                       type: number
- *                     successRate:
- *                       type: number
- *                     performanceByWebsite:
- *                       type: array
- *                       items:
- *                         type: object
- *       401:
- *         description: Unauthorized
- */
 
 // @route   GET /api/dashboard/crawl-performance
 // @desc    Get crawl performance metrics
