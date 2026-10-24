@@ -4,6 +4,7 @@ const WebCrawler = require('../services/crawler');
 const emailService = require('../services/email');
 const config = require('../../config/config');
 const { toPrismaErrorType } = require('../utils/errorType');
+const { publishCrawlEvent } = require('../services/realtime');
 
 class CrawlProcessor {
   constructor() {
@@ -64,9 +65,8 @@ class CrawlProcessor {
         console.log('✅ Crawler initialized successfully');
 
         console.log('🧪 Testing simple link check...');
-        const testResult = await processor.crawler.checkLink(
-          'https://google.com'
-        );
+        const testResult =
+          await processor.crawler.checkLink('https://google.com');
         console.log('✅ Link check successful:', testResult.status);
 
         await processor.crawler.close();
@@ -260,9 +260,31 @@ class CrawlProcessor {
         },
       });
 
+      let lastPublishedProgress = 0;
+      let publishChain = Promise.resolve();
+      const publish = (event) => {
+        publishChain = publishChain
+          .then(() =>
+            publishCrawlEvent({
+              crawlId: crawlResult.id,
+              websiteId,
+              userId,
+              ...event,
+            })
+          )
+          .catch((error) => {
+            console.error('Failed to publish crawl event:', error.message);
+          });
+        return publishChain;
+      };
+
+      publish({ status: 'running', progress: 0 });
+
       // Update job progress (only if not manual processing)
       if (!isManualProcessing) {
         job.progress(10);
+        lastPublishedProgress = 10;
+        publish({ status: 'running', progress: 10 });
       }
 
       try {
@@ -277,19 +299,30 @@ class CrawlProcessor {
                 progress.message || progress.percentage + '%'
               }`
             );
-            if (progress.phase === 'checking' && !isManualProcessing) {
+            if (progress.phase === 'checking') {
               const progressPercentage =
                 10 + Math.round(progress.percentage * 0.8); // 10-90%
-              job.progress(progressPercentage);
+              const boundedProgress = Math.max(
+                10,
+                Math.min(90, progressPercentage)
+              );
+              if (!isManualProcessing) job.progress(boundedProgress);
+              if (boundedProgress > lastPublishedProgress) {
+                lastPublishedProgress = boundedProgress;
+                publish({ status: 'running', progress: boundedProgress });
+              }
             }
           },
         });
 
         // Set a timeout for the entire crawl operation (5 minutes)
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => {
-            reject(new Error('Crawl operation timed out after 5 minutes'));
-          }, 5 * 60 * 1000);
+          setTimeout(
+            () => {
+              reject(new Error('Crawl operation timed out after 5 minutes'));
+            },
+            5 * 60 * 1000
+          );
         });
 
         const crawlData = await Promise.race([crawlPromise, timeoutPromise]);
@@ -299,6 +332,10 @@ class CrawlProcessor {
 
         if (!isManualProcessing) {
           job.progress(90);
+        }
+        if (lastPublishedProgress < 90) {
+          lastPublishedProgress = 90;
+          publish({ status: 'running', progress: 90 });
         }
 
         // Update crawl result with data
@@ -341,6 +378,15 @@ class CrawlProcessor {
 
         // Update website statistics
         await this.updateWebsiteStats(website, crawlData);
+
+        await publish({
+          status: 'completed',
+          progress: 100,
+          completedAt: crawlResult.completedAt.toISOString(),
+          totalLinksFound: crawlData.totalLinksFound,
+          totalLinksChecked: crawlData.totalLinksChecked,
+          brokenLinksFound: crawlData.brokenLinksFound,
+        });
 
         if (!isManualProcessing) {
           job.progress(95);
@@ -414,6 +460,13 @@ class CrawlProcessor {
             completedAt: new Date(),
             errorMessage: crawlError.message,
           },
+        });
+
+        await publish({
+          status: 'failed',
+          progress: lastPublishedProgress,
+          completedAt: new Date().toISOString(),
+          errorMessage: crawlError.message,
         });
 
         throw crawlError;

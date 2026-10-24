@@ -19,6 +19,7 @@
     "db:drop-tables": "node scripts/drop-tables.js",
     "seed:admin": "prisma migrate deploy && node scripts/seed-admin.js",
     "test": "node test-setup.js",
+    "test:realtime": "node --test tests/realtime.test.js",
     "test:watch": "nodemon test-setup.js",
     "redis:flush": "redis-cli FLUSHALL"
   },
@@ -50,13 +51,15 @@
     "pg": "8.23.1",
     "puppeteer": "25.16.0",
     "redis": "5.12.1",
+    "socket.io": "^4.8.4",
     "swagger-jsdoc": "6.3.0",
     "swagger-ui-express": "5.0.1",
     "uuid": "11.1.1"
   },
   "devDependencies": {
     "nodemon": "3.1.14",
-    "prisma": "6.19.3"
+    "prisma": "6.19.3",
+    "socket.io-client": "^4.8.4"
   },
   "packageManager": "pnpm@12.15.0"
 }

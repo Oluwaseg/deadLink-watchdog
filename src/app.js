@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -26,6 +27,10 @@ const { QueueService } = require('./services/queue');
 const CrawlProcessor = require('./workers/crawlProcessor');
 const NotificationProcessor = require('./workers/notificationProcessor');
 const SchedulerService = require('./services/scheduler');
+const {
+  attachRealtimeServer,
+  closeRealtimeServer,
+} = require('./services/realtime');
 
 class App {
   constructor() {
@@ -34,6 +39,13 @@ class App {
     this.crawlProcessor = new CrawlProcessor();
     this.notificationProcessor = new NotificationProcessor();
     this.schedulerService = new SchedulerService(this.queueService);
+
+    this.server = http.createServer(this.app);
+    attachRealtimeServer(this.server, {
+      jwtSecret: config.jwt.secret,
+      prisma,
+      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    });
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -205,12 +217,8 @@ class App {
     console.log('Starting graceful shutdown...');
 
     try {
-      // Stop accepting new connections
-      if (this.server) {
-        this.server.close(() => {
-          console.log('HTTP server closed');
-        });
-      }
+      // Socket.IO closes the shared HTTP listener when it shuts down.
+      await closeRealtimeServer();
 
       // Stop workers and services
       await this.crawlProcessor.stop();
@@ -236,7 +244,7 @@ class App {
       console.log('Database connection established successfully');
 
       // Start the server
-      this.server = this.app.listen(config.port, () => {
+      this.server.listen(config.port, () => {
         console.log(`
 🚀 DeadLink Watchdog API Server Started
 📍 Environment: ${config.nodeEnv}
