@@ -208,6 +208,8 @@ class QueueService {
     ]);
 
     return {
+      crawl: crawlStats,
+      notification: notificationStats,
       waiting: crawlStats.waiting + notificationStats.waiting,
       active: crawlStats.active + notificationStats.active,
       completed: crawlStats.completed + notificationStats.completed,
@@ -222,22 +224,22 @@ class QueueService {
     ]);
 
     return [
-      ...crawlJobs.map(job => ({
+      ...crawlJobs.map((job) => ({
         id: job.id,
         name: job.name,
         queue: 'crawl',
         data: job.data,
         progress: job.progress(),
-        timestamp: job.timestamp
+        timestamp: job.timestamp,
       })),
-      ...notificationJobs.map(job => ({
+      ...notificationJobs.map((job) => ({
         id: job.id,
         name: job.name,
         queue: 'notification',
         data: job.data,
         progress: job.progress(),
-        timestamp: job.timestamp
-      }))
+        timestamp: job.timestamp,
+      })),
     ];
   }
 
