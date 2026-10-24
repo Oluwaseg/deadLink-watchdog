@@ -112,6 +112,41 @@ function createRealtimeServer(httpServer, { jwtSecret, prisma, origin }) {
         return false;
       }
 
+      let notification = null;
+      let notificationCreated = false;
+      if (event.status === 'completed' || event.status === 'failed') {
+        const type =
+          event.status === 'completed' ? 'crawl_completed' : 'crawl_failed';
+        const title =
+          event.status === 'completed' ? 'Crawl completed' : 'Crawl failed';
+        const message =
+          event.status === 'completed'
+            ? `Website check finished with ${event.brokenLinksFound} broken link${event.brokenLinksFound === 1 ? '' : 's'}.`
+            : `Website check failed: ${event.errorMessage.slice(0, 350)}`;
+
+        const notificationData = {
+          userId: event.userId,
+          crawlId: event.crawlId,
+          type,
+          title,
+          message,
+        };
+
+        try {
+          notification = await prisma.notification.create({
+            data: notificationData,
+          });
+          notificationCreated = true;
+        } catch (error) {
+          if (error.code !== 'P2002') throw error;
+          notification = await prisma.notification.findUnique({
+            where: {
+              crawlId_type: { crawlId: event.crawlId, type },
+            },
+          });
+        }
+      }
+
       const payload = {
         crawlId: event.crawlId,
         websiteId: event.websiteId,
@@ -136,6 +171,9 @@ function createRealtimeServer(httpServer, { jwtSecret, prisma, origin }) {
             : 'crawl:progress'
           : `crawl:${event.status}`;
       io.to(`user:${event.userId}`).emit(eventName, payload);
+      if (notification && notificationCreated) {
+        io.to(`user:${event.userId}`).emit('notification:new', notification);
+      }
       return true;
     },
     close() {

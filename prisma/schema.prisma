@@ -35,6 +35,11 @@ enum CrawlStatus {
   failed
 }
 
+enum NotificationType {
+  crawl_completed
+  crawl_failed
+}
+
 enum ErrorType {
   e404_not_found    @map("404_not_found")
   e403_forbidden    @map("403_forbidden")
@@ -68,10 +73,29 @@ model User {
   websites     Website[]     @relation("UserWebsites")
   crawlResults CrawlResult[] @relation("UserCrawlResults")
   moderatedWebsites Website[] @relation("WebsiteModerator")
+  notifications Notification[]
 
   @@index([role])
   @@index([isActive])
   @@map("users")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  crawlId   String           @db.Uuid
+  type      NotificationType
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  crawl CrawlResult @relation(fields: [crawlId], references: [id], onDelete: Cascade)
+
+  @@unique([crawlId, type])
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
 }
 
 model Website {
@@ -132,6 +156,7 @@ model CrawlResult {
   website           Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   user              User         @relation("UserCrawlResults", fields: [userId], references: [id], onDelete: Cascade)
   brokenLinkRecords BrokenLink[]
+  notifications     Notification[]
 
   @@index([websiteId])
   @@index([userId])

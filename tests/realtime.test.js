@@ -31,7 +31,30 @@ async function createFixture() {
           ? { id: CRAWL_ID, websiteId: WEBSITE_ID }
           : null,
     },
+    notification: {
+      create: async ({ data }) => {
+        const key = `${data.crawlId}:${data.type}`;
+        if (notifications.has(key)) {
+          const error = new Error('Unique constraint failed');
+          error.code = 'P2002';
+          throw error;
+        }
+        const notification = {
+          id: `notification-${notifications.size + 1}`,
+          ...data,
+          readAt: null,
+          createdAt: new Date().toISOString(),
+        };
+        notifications.set(key, notification);
+        return notification;
+      },
+      findUnique: async ({ where }) => {
+        const key = `${where.crawlId_type.crawlId}:${where.crawlId_type.type}`;
+        return notifications.get(key) ?? null;
+      },
+    },
   };
+  const notifications = new Map();
   const httpServer = http.createServer();
   const realtime = createRealtimeServer(httpServer, {
     jwtSecret: SECRET,
@@ -47,6 +70,7 @@ async function createFixture() {
     realtime,
     httpServer,
     url,
+    notificationCount: () => notifications.size,
     client(accessToken) {
       return createSocketClient(url, {
         autoConnect: false,
@@ -202,6 +226,7 @@ test('reconnects without duplicate delivery and receives completed/failed events
   await connect(owner);
 
   const completed = nextEvent(owner, 'crawl:completed');
+  const completedNotification = nextEvent(owner, 'notification:new');
   await fixture.realtime.publishCrawlEvent({
     crawlId: CRAWL_ID,
     websiteId: WEBSITE_ID,
@@ -214,8 +239,10 @@ test('reconnects without duplicate delivery and receives completed/failed events
     brokenLinksFound: 2,
   });
   assert.equal((await completed).brokenLinksFound, 2);
+  assert.equal((await completedNotification).type, 'crawl_completed');
 
   const failed = nextEvent(owner, 'crawl:failed');
+  const failedNotification = nextEvent(owner, 'notification:new');
   await fixture.realtime.publishCrawlEvent({
     crawlId: CRAWL_ID,
     websiteId: WEBSITE_ID,
@@ -226,6 +253,25 @@ test('reconnects without duplicate delivery and receives completed/failed events
     errorMessage: 'Crawl timed out',
   });
   assert.equal((await failed).status, 'failed');
+  assert.equal((await failedNotification).type, 'crawl_failed');
+
+  const duplicateNotification = new Promise((resolve) => {
+    owner.once('notification:new', () => resolve(true));
+    setTimeout(() => resolve(false), 100);
+  });
+  await fixture.realtime.publishCrawlEvent({
+    crawlId: CRAWL_ID,
+    websiteId: WEBSITE_ID,
+    userId: OWNER_ID,
+    status: 'completed',
+    progress: 100,
+    completedAt: new Date().toISOString(),
+    totalLinksFound: 25,
+    totalLinksChecked: 25,
+    brokenLinksFound: 2,
+  });
+  assert.equal(await duplicateNotification, false);
+  assert.equal(fixture.notificationCount(), 2);
 
   let duplicateCount = 0;
   owner.on('crawl:progress', () => {
