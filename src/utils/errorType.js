@@ -7,6 +7,7 @@ const ERROR_TYPE_MAP = {
   '500_server_error': 'e500_server_error',
   timeout: 'timeout',
   connection_refused: 'connection_refused',
+  connection_error: 'connection_refused',
   dns_error: 'dns_error',
   ssl_error: 'ssl_error',
   redirect_loop: 'redirect_loop',
