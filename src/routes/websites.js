@@ -226,36 +226,65 @@ router.post(
       }
     });
 
-    const existingWebsite = await prisma.website.findFirst({
-      where: {
-        url: req.body.url,
-        userId: req.user.id,
-      },
-    });
+    const website = await prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw`
+        SELECT "id" FROM "users" WHERE "id" = ${req.user.id}::uuid FOR UPDATE
+      `;
 
-    if (existingWebsite) {
-      throw new AppError(
-        'Website with this URL already exists',
-        409,
-        'WEBSITE_EXISTS'
-      );
-    }
-
-    let website = await prisma.website.create({ data: websiteData });
-
-    if (websiteData.crawlFrequency) {
-      website = await prisma.website.update({
-        where: { id: website.id },
-        data: {
-          nextCrawlAt: calculateNextCrawlTime(websiteData.crawlFrequency),
+      const existingWebsite = await transaction.website.findFirst({
+        where: {
+          url: req.body.url,
+          userId: req.user.id,
         },
       });
-    }
 
-    await queueService.addCrawlJob(website.id, req.user.id, {
-      priority: 'high',
-      scheduledBy: 'user',
+      if (existingWebsite) {
+        throw new AppError(
+          'Website with this URL already exists',
+          409,
+          'WEBSITE_EXISTS'
+        );
+      }
+
+      const websiteCount = await transaction.website.count({
+        where: { userId: req.user.id },
+      });
+
+      if (websiteCount >= 3) {
+        throw new AppError(
+          'You can monitor up to 3 websites. Delete a website before adding another.',
+          409,
+          'WEBSITE_LIMIT_REACHED'
+        );
+      }
+
+      let createdWebsite = await transaction.website.create({
+        data: websiteData,
+      });
+
+      if (websiteData.crawlFrequency) {
+        createdWebsite = await transaction.website.update({
+          where: { id: createdWebsite.id },
+          data: {
+            nextCrawlAt: calculateNextCrawlTime(websiteData.crawlFrequency),
+          },
+        });
+      }
+
+      return createdWebsite;
     });
+
+    try {
+      await queueService.addCrawlJob(website.id, req.user.id, {
+        priority: 'high',
+        scheduledBy: 'user',
+      });
+    } catch (error) {
+      if (typeof error.code === 'string' && error.code.startsWith('CRAWL_')) {
+        await prisma.website.delete({ where: { id: website.id } });
+      }
+      throw error;
+    }
 
     res.status(201).json({
       success: true,
@@ -317,8 +346,7 @@ router.put(
 
     for (const field of allowedFields) {
       if (field in req.body) {
-        updateData[field] =
-          req.body[field] === '' ? null : req.body[field];
+        updateData[field] = req.body[field] === '' ? null : req.body[field];
       }
     }
 

@@ -1,5 +1,38 @@
 const Bull = require('bull');
+const { randomUUID } = require('crypto');
 const config = require('../../config/config');
+
+const ADMISSION_LOCK_TTL_MS = 60000;
+const ADMISSION_LOCK_WAIT_MS = 10000;
+const ADMISSION_LOCK_RENEW_MS = 15000;
+const EXECUTION_LOCK_RENEW_MS = 30000;
+const ACTIVE_CRAWL_STATES = ['waiting', 'active', 'delayed', 'paused'];
+let queueEventListenersRegistered = false;
+
+const RELEASE_LOCK_SCRIPT = `
+  if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+  end
+  return 0
+`;
+
+const EXTEND_LOCK_SCRIPT = `
+  if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('pexpire', KEYS[1], ARGV[2])
+  end
+  return 0
+`;
+
+class QueueAdmissionError extends Error {
+  constructor(message, statusCode, code) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
+const wait = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 // Create Redis connection options
 const redisConfig = {
@@ -48,6 +81,9 @@ class QueueService {
   }
 
   setupEventListeners() {
+    if (queueEventListenersRegistered) return;
+    queueEventListenersRegistered = true;
+
     // Crawl queue events
     this.crawlQueue.on('completed', (job, result) => {
       console.log(
@@ -86,15 +122,46 @@ class QueueService {
     const jobOptions = {
       priority: this.getPriorityValue(options.priority),
       delay: options.delay || 0,
-      jobId: `crawl-${websiteId}-${Date.now()}`,
+      jobId: options.jobId || `crawl-${websiteId}-${randomUUID()}`,
     };
 
     try {
-      const job = await this.crawlQueue.add(
-        'crawl-website',
-        jobData,
-        jobOptions
-      );
+      const job = await this.withCrawlAdmissionLock(async (assertLockOwned) => {
+        const pendingJobs = await this.crawlQueue.getJobs(
+          ACTIVE_CRAWL_STATES,
+          0,
+          -1
+        );
+        const pendingCrawls = pendingJobs.filter(
+          (pendingJob) => pendingJob.name === 'crawl-website'
+        );
+
+        if (
+          pendingCrawls.some(
+            (pendingJob) => pendingJob.data.websiteId === websiteId
+          )
+        ) {
+          throw new QueueAdmissionError(
+            'A crawl is already queued or running for this website.',
+            409,
+            'CRAWL_ALREADY_ACTIVE'
+          );
+        }
+
+        const userPendingCount = pendingCrawls.filter(
+          (pendingJob) => pendingJob.data.userId === userId
+        ).length;
+        if (userPendingCount >= config.crawler.maxActiveJobsPerUser) {
+          throw new QueueAdmissionError(
+            `You have reached the limit of ${config.crawler.maxActiveJobsPerUser} active crawl jobs. Wait for a crawl to finish before starting another.`,
+            429,
+            'CRAWL_ACTIVE_LIMIT_REACHED'
+          );
+        }
+
+        await assertLockOwned();
+        return this.crawlQueue.add('crawl-website', jobData, jobOptions);
+      });
       console.log(`✅ Added crawl job ${job.id} for website ${websiteId}`);
 
       // Log queue stats after adding job
@@ -108,9 +175,153 @@ class QueueService {
 
       return job;
     } catch (error) {
-      console.error('Failed to add crawl job:', error);
+      if (!(error instanceof QueueAdmissionError)) {
+        console.error('Failed to add crawl job:', error);
+      }
       throw error;
     }
+  }
+
+  async withCrawlAdmissionLock(callback) {
+    const client = this.crawlQueue.client;
+    const lockKey = this.crawlQueue.toKey('crawl-admission-lock');
+    const lockToken = randomUUID();
+    const deadline = Date.now() + ADMISSION_LOCK_WAIT_MS;
+    let acquired = false;
+    let lockLost = false;
+    let renewTimer;
+
+    while (!acquired && Date.now() < deadline) {
+      acquired =
+        (await client.set(
+          lockKey,
+          lockToken,
+          'PX',
+          ADMISSION_LOCK_TTL_MS,
+          'NX'
+        )) === 'OK';
+      if (!acquired) await wait(25);
+    }
+
+    if (!acquired) {
+      throw new QueueAdmissionError(
+        'Crawl queue admission is busy. Please try again.',
+        503,
+        'CRAWL_ADMISSION_BUSY'
+      );
+    }
+
+    renewTimer = setInterval(async () => {
+      try {
+        const renewed = await client.eval(
+          EXTEND_LOCK_SCRIPT,
+          1,
+          lockKey,
+          lockToken,
+          ADMISSION_LOCK_TTL_MS
+        );
+        if (Number(renewed) !== 1) lockLost = true;
+      } catch {
+        lockLost = true;
+      }
+    }, ADMISSION_LOCK_RENEW_MS);
+
+    try {
+      return await callback(async () => {
+        if (lockLost) {
+          throw new QueueAdmissionError(
+            'Crawl queue admission could not be safely completed. Please retry.',
+            503,
+            'CRAWL_ADMISSION_BUSY'
+          );
+        }
+        const renewed = await client.eval(
+          EXTEND_LOCK_SCRIPT,
+          1,
+          lockKey,
+          lockToken,
+          ADMISSION_LOCK_TTL_MS
+        );
+        if (Number(renewed) !== 1) {
+          throw new QueueAdmissionError(
+            'Crawl queue admission could not be safely completed. Please retry.',
+            503,
+            'CRAWL_ADMISSION_BUSY'
+          );
+        }
+      });
+    } finally {
+      clearInterval(renewTimer);
+      await client.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, lockToken);
+    }
+  }
+
+  async acquireCrawlExecutionSlot(userId) {
+    const client = this.crawlQueue.client;
+    const slotCount = config.crawler.maxConcurrentPerUser;
+    const leaseMs = config.crawler.userExecutionLeaseMs;
+    const ownerToken = randomUUID();
+    let slotKey;
+
+    while (!slotKey) {
+      for (let slot = 0; slot < slotCount; slot += 1) {
+        const candidateKey = this.crawlQueue.toKey(
+          `crawl-user-slot:${userId}:${slot}`
+        );
+        const acquired = await client.set(
+          candidateKey,
+          ownerToken,
+          'PX',
+          leaseMs,
+          'NX'
+        );
+        if (acquired === 'OK') {
+          slotKey = candidateKey;
+          break;
+        }
+      }
+      if (!slotKey) await wait(250);
+    }
+
+    let released = false;
+    let leaseLost = false;
+    let renewTimer;
+    const renew = async () => {
+      if (released || leaseLost) return;
+      try {
+        const renewed = await client.eval(
+          EXTEND_LOCK_SCRIPT,
+          1,
+          slotKey,
+          ownerToken,
+          leaseMs
+        );
+        if (Number(renewed) !== 1) leaseLost = true;
+      } catch {
+        leaseLost = true;
+      }
+    };
+
+    renewTimer = setInterval(renew, EXECUTION_LOCK_RENEW_MS);
+
+    return {
+      get leaseLost() {
+        return leaseLost;
+      },
+      async release() {
+        if (released) return;
+        released = true;
+        clearInterval(renewTimer);
+        try {
+          await client.eval(RELEASE_LOCK_SCRIPT, 1, slotKey, ownerToken);
+        } catch (error) {
+          console.error(
+            'Failed to release per-user crawl execution slot:',
+            error
+          );
+        }
+      },
+    };
   }
 
   // Add a notification job to the queue
@@ -272,7 +483,58 @@ class QueueService {
     const job = await queue.getJob(jobId);
 
     if (job && job.failedReason) {
-      await job.retry();
+      if (queueType !== 'crawl' || job.name !== 'crawl-website') {
+        await job.retry();
+        console.log(`Retried job ${jobId} from ${queueType} queue`);
+        return true;
+      }
+
+      await this.withCrawlAdmissionLock(async (assertLockOwned) => {
+        const currentJob = await this.crawlQueue.getJob(jobId);
+        if (!currentJob || !currentJob.failedReason) {
+          throw new QueueAdmissionError(
+            'This crawl is no longer available to retry.',
+            409,
+            'CRAWL_RETRY_NOT_AVAILABLE'
+          );
+        }
+
+        const pendingJobs = await this.crawlQueue.getJobs(
+          ACTIVE_CRAWL_STATES,
+          0,
+          -1
+        );
+        const pendingCrawls = pendingJobs.filter(
+          (pendingJob) =>
+            pendingJob.name === 'crawl-website' && pendingJob.id !== jobId
+        );
+        if (
+          pendingCrawls.some(
+            (pendingJob) =>
+              pendingJob.data.websiteId === currentJob.data.websiteId
+          )
+        ) {
+          throw new QueueAdmissionError(
+            'A crawl is already queued or running for this website.',
+            409,
+            'CRAWL_ALREADY_ACTIVE'
+          );
+        }
+
+        const userPendingCount = pendingCrawls.filter(
+          (pendingJob) => pendingJob.data.userId === currentJob.data.userId
+        ).length;
+        if (userPendingCount >= config.crawler.maxActiveJobsPerUser) {
+          throw new QueueAdmissionError(
+            `You have reached the limit of ${config.crawler.maxActiveJobsPerUser} active crawl jobs. Wait for a crawl to finish before starting another.`,
+            429,
+            'CRAWL_ACTIVE_LIMIT_REACHED'
+          );
+        }
+
+        await assertLockOwned();
+        await currentJob.retry();
+      });
       console.log(`Retried job ${jobId} from ${queueType} queue`);
       return true;
     }
@@ -331,4 +593,13 @@ class QueueService {
   }
 }
 
-module.exports = { QueueService, crawlQueue, notificationQueue };
+const acquireCrawlExecutionSlot = (userId) =>
+  QueueService.prototype.acquireCrawlExecutionSlot.call({ crawlQueue }, userId);
+
+module.exports = {
+  QueueAdmissionError,
+  QueueService,
+  acquireCrawlExecutionSlot,
+  crawlQueue,
+  notificationQueue,
+};

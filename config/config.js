@@ -47,6 +47,18 @@ module.exports = {
     timeout: parseInt(process.env.CRAWLER_TIMEOUT) || 10000, // Reduced from 30000ms
     userAgent: process.env.CRAWLER_USER_AGENT || 'DeadLinkWatchdog/1.0',
     maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CRAWLS) || 10, // Increased from 5
+    maxActiveJobsPerUser: Math.max(
+      1,
+      parseInt(process.env.MAX_ACTIVE_CRAWL_JOBS_PER_USER) || 10
+    ),
+    maxConcurrentPerUser: Math.max(
+      1,
+      parseInt(process.env.MAX_CONCURRENT_CRAWLS_PER_USER) || 2
+    ),
+    userExecutionLeaseMs: Math.max(
+      60000,
+      parseInt(process.env.USER_CRAWL_EXECUTION_LEASE_MS) || 120000
+    ),
     maxRetries: parseInt(process.env.CRAWLER_MAX_RETRIES) || 2, // Reduced from 3
     retryDelay: parseInt(process.env.CRAWLER_RETRY_DELAY) || 500, // Reduced from 1000ms
     circuitBreakerTimeout:

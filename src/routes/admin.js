@@ -96,6 +96,9 @@ router.get(
           role: true,
           isActive: true,
           createdAt: true,
+          _count: {
+            select: { websites: true },
+          },
         },
         take: parseInt(limit),
         skip: parseInt(skip),
@@ -107,7 +110,10 @@ router.get(
     res.json({
       success: true,
       data: {
-        users,
+        users: users.map(({ _count, ...user }) => ({
+          ...user,
+          websiteCount: _count.websites,
+        })),
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),

@@ -1,4 +1,4 @@
-const { crawlQueue } = require('../services/queue');
+const { acquireCrawlExecutionSlot, crawlQueue } = require('../services/queue');
 const prisma = require('../lib/prisma');
 const WebCrawler = require('../services/crawler');
 const emailService = require('../services/email');
@@ -44,7 +44,7 @@ class CrawlProcessor {
           `🔄 Worker picked up job ${job.id} for website ${job.data.websiteId}`
         );
         try {
-          const result = await processor.processCrawlJob(job);
+          const result = await processor.processWithUserExecutionSlot(job);
           console.log(`✅ Job ${job.id} completed successfully`);
           return result;
         } catch (error) {
@@ -161,7 +161,7 @@ class CrawlProcessor {
 
         // Process the job manually as a fallback
         try {
-          await this.processCrawlJob(firstJob, true);
+          await this.processWithUserExecutionSlot(firstJob, true);
           await firstJob.remove();
           console.log(`✅ Manually processed job ${firstJob.id}`);
         } catch (error) {
@@ -185,6 +185,20 @@ class CrawlProcessor {
     await this.crawler.close();
 
     console.log('Crawl processor stopped');
+  }
+
+  async processWithUserExecutionSlot(job, isManualProcessing = false) {
+    const executionSlot = await acquireCrawlExecutionSlot(job.data.userId);
+    try {
+      return await this.processCrawlJob(job, isManualProcessing);
+    } finally {
+      if (executionSlot.leaseLost) {
+        console.error(
+          `Per-user crawl execution lease was lost for job ${job.id}`
+        );
+      }
+      await executionSlot.release();
+    }
   }
 
   async processCrawlJob(job, isManualProcessing = false) {
@@ -233,7 +247,7 @@ class CrawlProcessor {
         );
       }
 
-      if (existingCrawlResult) {
+      if (existingCrawlResult?.status === 'completed') {
         console.log(
           `Crawl result already exists for job ${job.id}, skipping...`
         );
@@ -244,21 +258,40 @@ class CrawlProcessor {
         };
       }
 
-      // Create crawl result record
-      let crawlResult = await prisma.crawlResult.create({
-        data: {
-          websiteId,
-          userId,
-          status: 'running',
-          startedAt: new Date(),
-          crawlDepth,
-          userAgent: config.crawler.userAgent,
-          summary: {
-            scheduledBy,
-            jobId: job.id,
+      let crawlResult;
+      if (existingCrawlResult) {
+        crawlResult = await prisma.crawlResult.update({
+          where: { id: existingCrawlResult.id },
+          data: {
+            status: 'running',
+            startedAt: new Date(),
+            completedAt: null,
+            errorMessage: null,
+            crawlDepth,
+            userAgent: config.crawler.userAgent,
+            summary: {
+              ...(existingCrawlResult.summary || {}),
+              scheduledBy,
+              jobId: job.id,
+            },
           },
-        },
-      });
+        });
+      } else {
+        crawlResult = await prisma.crawlResult.create({
+          data: {
+            websiteId,
+            userId,
+            status: 'running',
+            startedAt: new Date(),
+            crawlDepth,
+            userAgent: config.crawler.userAgent,
+            summary: {
+              scheduledBy,
+              jobId: job.id,
+            },
+          },
+        });
+      }
 
       let lastPublishedProgress = 0;
       let publishChain = Promise.resolve();
