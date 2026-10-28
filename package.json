@@ -19,6 +19,10 @@
     "db:drop-tables": "node scripts/drop-tables.js",
     "seed:admin": "prisma migrate deploy && node scripts/seed-admin.js",
     "test": "node test-setup.js",
+    "test:unit": "node --test --test-concurrency=1 tests/admin-users.test.js tests/config-validation.test.js tests/crawl-budget.test.js tests/crawl-processor-recovery.test.js tests/crawl-queue-limits.test.js tests/crawl-retry.test.js tests/email-verification.test.js tests/outbound-proxy.test.js tests/outbound-url-policy.test.js tests/realtime.test.js tests/website-limit.test.js",
+    "test:integration:postgres": "node scripts/run-postgres-integration.js",
+    "test:integration:redis": "node scripts/run-redis-integration.js",
+    "test:integration:chromium": "node --test tests/outbound-chromium.integration.test.js",
     "test:realtime": "node --test tests/realtime.test.js",
     "test:watch": "nodemon test-setup.js",
     "redis:flush": "redis-cli FLUSHALL"

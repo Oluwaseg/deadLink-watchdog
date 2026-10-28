@@ -74,3 +74,9 @@ Website report and moderation fields are available to administrators, but the cu
 ## Version 2.0 roadmap
 
 Planned product and platform improvements are tracked separately. See the [DeadLink Watchdog v2.0 roadmap](ROADMAP.md) for proposed subscription plans, enhanced crawling, analytics, team collaboration, integrations, security improvements, and infrastructure work.
+
+### Production configuration
+
+Production startup requires explicit `DATABASE_URL`, `REDIS_HOST`, and a strong unique `JWT_SECRET`. Do not rely on the local development database/Redis defaults. Rotate `JWT_SECRET` deliberately: existing access and refresh tokens will become invalid, so users must authenticate again. Current access tokens and refresh tokens are purpose-tagged; a refresh token cannot be used as an access token, or vice versa.
+
+The `20261028100000_limit_email_verification_attempts` migration adds a defaulted per-user counter. Generate the Prisma client and apply reviewed migrations before deploying application code that reads the new field; do not run the reset/drop scripts against production. The repository does not currently define a verified PostgreSQL backup/restore procedure, so establish and test one before relying on production data retention.

@@ -1,37 +1,47 @@
-const { acquireCrawlExecutionSlot, crawlQueue } = require('../services/queue');
+const {
+  acquireCrawlExecutionSlot,
+  clearCrawlCancellation,
+  crawlQueue,
+  watchCrawlCancellation,
+} = require('../services/queue');
 const prisma = require('../lib/prisma');
 const WebCrawler = require('../services/crawler');
 const emailService = require('../services/email');
 const config = require('../../config/config');
 const { toPrismaErrorType } = require('../utils/errorType');
+const { requestPublicUrl } = require('../services/outboundUrlPolicy');
 const { publishCrawlEvent } = require('../services/realtime');
+const {
+  CrawlCancellationError,
+  CrawlLeaseLostError,
+  raceWithAbort,
+  throwIfAborted,
+} = require('../services/crawlCancellation');
+
+const CRAWL_TIMEOUT_MS = 5 * 60 * 1000;
 
 class CrawlProcessor {
   constructor() {
     this.crawler = new WebCrawler();
     this.isProcessing = false;
+    this.crawlTimeoutMs = CRAWL_TIMEOUT_MS;
   }
 
   async start() {
     console.log('Starting crawl processor...');
 
-    // Check Redis connection
-    console.log('🔗 Checking Redis connection for crawl queue...');
-    crawlQueue.client.ping((err, result) => {
-      if (err) {
-        console.error('❌ Redis connection error:', err);
-      } else {
-        console.log('✅ Redis connection successful:', result);
-      }
+    console.log('Checking Redis connection for crawl queue...');
+    await new Promise((resolve, reject) => {
+      crawlQueue.client.ping((error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      });
     });
+    console.log('Redis connection successful.');
 
     // Process crawl jobs
     console.log('🔧 Setting up job processor for "crawl-website" jobs...');
     console.log(`🔧 Max concurrent jobs: ${config.crawler.maxConcurrent}`);
-
-    // Test if the queue is working by adding a simple test job
-    console.log('🧪 Testing queue by adding a test job...');
-    await crawlQueue.add('test-job', { test: true }, { delay: 1000 });
 
     // Store reference to this for use in job handlers
     const processor = this;
@@ -44,7 +54,7 @@ class CrawlProcessor {
           `🔄 Worker picked up job ${job.id} for website ${job.data.websiteId}`
         );
         try {
-          const result = await processor.processWithUserExecutionSlot(job);
+          const result = await processor.processQueuedCrawl(job);
           console.log(`✅ Job ${job.id} completed successfully`);
           return result;
         } catch (error) {
@@ -53,30 +63,6 @@ class CrawlProcessor {
         }
       }
     );
-
-    // Also process test jobs
-    crawlQueue.process('test-job', 1, async (job) => {
-      console.log(`🧪 Test job processed: ${job.id}`);
-
-      // Test the crawler
-      try {
-        console.log('🧪 Testing crawler initialization...');
-        await processor.crawler.initialize();
-        console.log('✅ Crawler initialized successfully');
-
-        console.log('🧪 Testing simple link check...');
-        const testResult =
-          await processor.crawler.checkLink('https://google.com');
-        console.log('✅ Link check successful:', testResult.status);
-
-        await processor.crawler.close();
-        console.log('✅ Crawler closed successfully');
-      } catch (error) {
-        console.error('❌ Crawler test failed:', error.message);
-      }
-
-      return { test: 'success' };
-    });
 
     // Set up event listeners
     crawlQueue.on('completed', (job, result) => {
@@ -152,25 +138,8 @@ class CrawlProcessor {
       // If there are waiting jobs but no active jobs, something might be wrong
       if (waiting.length > 0 && active.length === 0) {
         console.log(
-          `⚠️ Found ${waiting.length} waiting jobs but no active jobs. Checking queue health...`
+          `⚠️ Found ${waiting.length} waiting jobs but no active jobs. Bull stalled-job recovery remains responsible for processing them.`
         );
-
-        // Try to manually trigger processing of the first job
-        const firstJob = waiting[0];
-        console.log(`🔧 Attempting to manually trigger job ${firstJob.id}`);
-
-        // Process the job manually as a fallback
-        try {
-          await this.processWithUserExecutionSlot(firstJob, true);
-          await firstJob.remove();
-          console.log(`✅ Manually processed job ${firstJob.id}`);
-        } catch (error) {
-          console.error(
-            `❌ Manual processing failed for job ${firstJob.id}:`,
-            error.message
-          );
-          await firstJob.remove(); // Remove failed job
-        }
       }
     } catch (error) {
       console.error('Error checking queue health:', error.message);
@@ -188,34 +157,237 @@ class CrawlProcessor {
   }
 
   async processWithUserExecutionSlot(job, isManualProcessing = false) {
-    const executionSlot = await acquireCrawlExecutionSlot(job.data.userId);
+    const controller = new AbortController();
+    const stopWatchingCancellation = await watchCrawlCancellation(
+      job.id,
+      controller
+    );
+    let executionSlot;
+    let timeout;
+    let onLockLost;
     try {
-      return await this.processCrawlJob(job, isManualProcessing);
+      executionSlot = await acquireCrawlExecutionSlot(
+        job.data.userId,
+        controller.signal,
+        (leaseError) => {
+          if (!controller.signal.aborted) {
+            controller.abort(
+              new CrawlCancellationError(
+                'lease_lost',
+                `Crawl execution lease was lost: ${leaseError?.message || 'renewal failed'}`
+              )
+            );
+          }
+        }
+      );
+      onLockLost = (lostJob, lockError) => {
+        if (lostJob?.id === job.id && !controller.signal.aborted) {
+          controller.abort(
+            new CrawlCancellationError(
+              'cancelled',
+              `Crawl worker lost its Bull lock: ${lockError?.message || 'lock renewal failed'}`
+            )
+          );
+        }
+      };
+      crawlQueue.on('lock-extension-failed', onLockLost);
+      timeout = setTimeout(() => {
+        controller.abort(new CrawlCancellationError('timeout'));
+      }, this.crawlTimeoutMs);
+      return await this.processCrawlJob(
+        job,
+        isManualProcessing,
+        controller.signal,
+        () => clearTimeout(timeout)
+      );
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const cancellation = controller.signal.reason;
+        if (cancellation?.reason !== 'lease_lost') {
+          job.discard?.();
+        }
+        return {
+          success: false,
+          cancelled: cancellation?.reason === 'cancelled',
+          timedOut: cancellation?.reason === 'timeout',
+          leaseLost: cancellation?.reason === 'lease_lost',
+          terminationReason: cancellation?.reason || 'cancelled',
+          errorMessage: cancellation?.message || 'Crawl was cancelled.',
+        };
+      }
+      throw error;
     } finally {
-      if (executionSlot.leaseLost) {
+      clearTimeout(timeout);
+      if (onLockLost) {
+        crawlQueue.removeListener('lock-extension-failed', onLockLost);
+      }
+      await stopWatchingCancellation();
+      await clearCrawlCancellation(job.id);
+      if (executionSlot?.leaseLost) {
         console.error(
           `Per-user crawl execution lease was lost for job ${job.id}`
         );
       }
-      await executionSlot.release();
+      await executionSlot?.release();
     }
   }
 
-  async processCrawlJob(job, isManualProcessing = false) {
+  async processQueuedCrawl(job) {
+    const result = await this.processWithUserExecutionSlot(job);
+    if (
+      result?.terminationReason === 'timeout' ||
+      result?.terminationReason === 'cancelled'
+    ) {
+      job.discard?.();
+      throw new CrawlCancellationError(
+        result.terminationReason,
+        result.errorMessage
+      );
+    }
+    if (result?.terminationReason === 'lease_lost') {
+      throw new CrawlLeaseLostError(result.errorMessage);
+    }
+    return result;
+  }
+
+  async acquireCrawlResult(
+    job,
+    website,
+    { userId, crawlDepth, scheduledBy, retryCrawlResultId }
+  ) {
+    if (
+      job.id === undefined ||
+      job.id === null ||
+      String(job.id).trim() === ''
+    ) {
+      throw new Error('Bull crawl job is missing its job ID.');
+    }
+    const bullJobId = String(job.id);
+    const resultData = {
+      websiteId: website.id,
+      userId,
+      status: 'running',
+      startedAt: new Date(),
+      crawlDepth,
+      userAgent: config.crawler.userAgent,
+      summary: { scheduledBy, jobId: bullJobId },
+    };
+
+    const assertResultOwner = (result) => {
+      if (
+        !result ||
+        result.websiteId !== website.id ||
+        result.userId !== userId ||
+        (retryCrawlResultId && result.id !== retryCrawlResultId)
+      ) {
+        throw new Error(
+          'Retry crawl result does not match the queued website.'
+        );
+      }
+    };
+
+    try {
+      return await prisma.$transaction(async (transaction) => {
+        const association = await transaction.crawlJobResult.findUnique({
+          where: { bullJobId },
+          include: { crawlResult: true },
+        });
+        let crawlResult = association?.crawlResult || null;
+
+        if (
+          association &&
+          retryCrawlResultId &&
+          crawlResult.id !== retryCrawlResultId
+        ) {
+          throw new Error(
+            'Bull job is already associated with a different crawl result.'
+          );
+        }
+
+        if (!crawlResult && retryCrawlResultId) {
+          crawlResult = await transaction.crawlResult.findUnique({
+            where: { id: retryCrawlResultId },
+          });
+          if (!crawlResult)
+            throw new Error('Retry crawl result no longer exists.');
+        }
+
+        if (!crawlResult) {
+          crawlResult = await transaction.crawlResult.create({
+            data: resultData,
+          });
+        } else if (crawlResult.status === 'completed') {
+          assertResultOwner(crawlResult);
+          if (!association) {
+            await transaction.crawlJobResult.create({
+              data: { bullJobId, crawlResultId: crawlResult.id },
+            });
+          }
+          return crawlResult;
+        } else {
+          crawlResult = await transaction.crawlResult.update({
+            where: { id: crawlResult.id },
+            data: {
+              status: 'running',
+              startedAt: new Date(),
+              completedAt: null,
+              errorMessage: null,
+              crawlDepth,
+              userAgent: config.crawler.userAgent,
+              summary: {
+                ...(crawlResult.summary || {}),
+                scheduledBy,
+                jobId: bullJobId,
+              },
+            },
+          });
+        }
+
+        assertResultOwner(crawlResult);
+        if (!association) {
+          await transaction.crawlJobResult.create({
+            data: { bullJobId, crawlResultId: crawlResult.id },
+          });
+        }
+        return crawlResult;
+      });
+    } catch (error) {
+      if (error.code !== 'P2002') throw error;
+
+      // Another transaction may have created this job association first. Its result is canonical.
+      const association = await prisma.crawlJobResult.findUnique({
+        where: { bullJobId },
+        include: { crawlResult: true },
+      });
+      if (!association) throw error;
+      assertResultOwner(association.crawlResult);
+      return association.crawlResult;
+    }
+  }
+
+  async processCrawlJob(
+    job,
+    isManualProcessing = false,
+    signal = null,
+    onCrawlFinished = () => {}
+  ) {
     const {
       websiteId,
       userId,
       crawlDepth = 1,
       scheduledBy = 'manual',
+      crawlResultId: retryCrawlResultId,
     } = job.data;
 
     console.log(`Processing crawl job ${job.id} for website ${websiteId}`);
 
     try {
+      throwIfAborted(signal);
       // Get website details
       const website = await prisma.website.findUnique({
         where: { id: websiteId },
       });
+      throwIfAborted(signal);
       if (!website) {
         throw new Error(`Website ${websiteId} not found`);
       }
@@ -224,87 +396,38 @@ class CrawlProcessor {
         throw new Error(`Website ${websiteId} is not active`);
       }
 
-      // Check if a crawl result already exists for this job
-      let existingCrawlResult = null;
-      try {
-        existingCrawlResult = await prisma.crawlResult.findFirst({
-          where: {
-            summary: {
-              path: ['jobId'],
-              equals: job.id,
-            },
-          },
-        });
-      } catch (jsonFilterError) {
-        // Fallback: load recent results and filter in JS
-        const recentResults = await prisma.crawlResult.findMany({
-          where: { websiteId },
-          orderBy: { createdAt: 'desc' },
-          take: 50,
-        });
-        existingCrawlResult = recentResults.find(
-          (r) => r.summary && r.summary.jobId === job.id
-        );
-      }
+      let crawlResult = await this.acquireCrawlResult(job, website, {
+        userId,
+        crawlDepth,
+        scheduledBy,
+        retryCrawlResultId,
+      });
 
-      if (existingCrawlResult?.status === 'completed') {
+      if (crawlResult.status === 'completed') {
         console.log(
           `Crawl result already exists for job ${job.id}, skipping...`
         );
         return {
           success: true,
-          crawlResultId: existingCrawlResult.id,
+          crawlResultId: crawlResult.id,
           message: 'Crawl result already exists',
         };
       }
-
-      let crawlResult;
-      if (existingCrawlResult) {
-        crawlResult = await prisma.crawlResult.update({
-          where: { id: existingCrawlResult.id },
-          data: {
-            status: 'running',
-            startedAt: new Date(),
-            completedAt: null,
-            errorMessage: null,
-            crawlDepth,
-            userAgent: config.crawler.userAgent,
-            summary: {
-              ...(existingCrawlResult.summary || {}),
-              scheduledBy,
-              jobId: job.id,
-            },
-          },
-        });
-      } else {
-        crawlResult = await prisma.crawlResult.create({
-          data: {
-            websiteId,
-            userId,
-            status: 'running',
-            startedAt: new Date(),
-            crawlDepth,
-            userAgent: config.crawler.userAgent,
-            summary: {
-              scheduledBy,
-              jobId: job.id,
-            },
-          },
-        });
-      }
+      throwIfAborted(signal);
 
       let lastPublishedProgress = 0;
       let publishChain = Promise.resolve();
       const publish = (event) => {
         publishChain = publishChain
-          .then(() =>
-            publishCrawlEvent({
+          .then(() => {
+            if (signal?.aborted && event.status !== 'failed') return false;
+            return publishCrawlEvent({
               crawlId: crawlResult.id,
               websiteId,
               userId,
               ...event,
-            })
-          )
+            });
+          })
           .catch((error) => {
             console.error('Failed to publish crawl event:', error.message);
           });
@@ -321,11 +444,12 @@ class CrawlProcessor {
       }
 
       try {
+        throwIfAborted(signal);
         console.log(`Starting crawl for website: ${website.url}`);
 
-        // Add timeout wrapper for the crawl operation
         const crawlPromise = this.crawler.crawlWebsite(website.url, {
           depth: crawlDepth,
+          signal,
           onProgress: (progress) => {
             console.log(
               `Crawl progress: ${progress.phase} - ${
@@ -348,19 +472,24 @@ class CrawlProcessor {
           },
         });
 
-        // Set a timeout for the entire crawl operation (5 minutes)
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(
-            () => {
-              reject(new Error('Crawl operation timed out after 5 minutes'));
-            },
-            5 * 60 * 1000
-          );
-        });
-
-        const crawlData = await Promise.race([crawlPromise, timeoutPromise]);
+        let crawlData;
+        try {
+          crawlData = await raceWithAbort(crawlPromise, signal);
+        } catch (error) {
+          if (!signal?.aborted) throw error;
+          await crawlPromise.catch(() => {});
+          throw signal.reason instanceof Error ? signal.reason : error;
+        }
+        onCrawlFinished();
+        throwIfAborted(signal);
+        const budgetTermination = crawlData.terminationReason;
+        const budgetTerminationMessage = budgetTermination
+          ? budgetTermination === 'max_pages_reached'
+            ? `Crawl stopped after reaching the ${config.crawler.maxPagesPerCrawl}-page limit; results are partial.`
+            : `Crawl stopped after reaching the ${config.crawler.maxNetworkRequestsPerCrawl}-network-request limit; results are partial.`
+          : null;
         console.log(
-          `Crawl completed for ${website.url}: ${crawlData.totalLinksFound} links found, ${crawlData.brokenLinksFound} broken`
+          `${budgetTermination ? 'Crawl stopped early' : 'Crawl completed'} for ${website.url}: ${crawlData.totalLinksFound} links found, ${crawlData.brokenLinksFound} broken`
         );
 
         if (!isManualProcessing) {
@@ -371,55 +500,132 @@ class CrawlProcessor {
           publish({ status: 'running', progress: 90 });
         }
 
-        // Update crawl result with data
-        crawlResult = await prisma.crawlResult.update({
-          where: { id: crawlResult.id },
-          data: {
-            status: 'completed',
-            completedAt: new Date(),
-            totalLinksFound: crawlData.totalLinksFound,
-            totalLinksChecked: crawlData.totalLinksChecked,
-            brokenLinksFound: crawlData.brokenLinksFound,
-            redirectsFound: crawlData.redirectsFound,
-            timeoutsFound: crawlData.timeoutsFound,
-            averageResponseTime: crawlData.averageResponseTime,
-            summary: {
-              ...(crawlResult.summary || {}),
-              crawlDuration: crawlData.endTime - crawlData.startTime,
-              errors: crawlData.errors,
-            },
-          },
-        });
-
-        // Save broken links to database
-        if (crawlData.brokenLinks && crawlData.brokenLinks.length > 0) {
-          const brokenLinksData = crawlData.brokenLinks.map((link) => ({
+        const brokenLinksByIdentity = new Map();
+        for (const link of crawlData.brokenLinks || []) {
+          const errorType = toPrismaErrorType(link.errorType);
+          const identity = JSON.stringify([
+            link.url,
+            link.sourceUrl,
+            errorType,
+          ]);
+          brokenLinksByIdentity.set(identity, {
             websiteId,
             crawlResultId: crawlResult.id,
             url: link.url,
             sourceUrl: link.sourceUrl,
             linkText: link.linkText,
             statusCode: link.statusCode,
-            errorType: toPrismaErrorType(link.errorType),
+            errorType,
             errorMessage: link.errorMessage,
             responseTime: link.responseTime,
             redirectChain: link.redirectChain || [],
-          }));
+          });
+        }
+        const brokenLinksData = [...brokenLinksByIdentity.values()];
 
-          await prisma.brokenLink.createMany({ data: brokenLinksData });
+        // Lock and replace persistence for this crawl atomically before exposing a terminal status.
+        const persistence = await prisma.$transaction(async (transaction) => {
+          await transaction.$queryRaw`
+            SELECT "id" FROM "crawl_results" WHERE "id" = ${crawlResult.id}::uuid FOR UPDATE
+          `;
+          const currentResult = await transaction.crawlResult.findUnique({
+            where: { id: crawlResult.id },
+          });
+          if (!currentResult || currentResult.status !== 'running') {
+            return { claimed: false, crawlResult: currentResult };
+          }
+
+          throwIfAborted(signal);
+          await transaction.brokenLink.deleteMany({
+            where: { crawlResultId: crawlResult.id },
+          });
+          if (brokenLinksData.length > 0) {
+            await transaction.brokenLink.createMany({ data: brokenLinksData });
+          }
+          throwIfAborted(signal);
+
+          if (!budgetTermination) {
+            await this.updateWebsiteStats(transaction, website, crawlData);
+          }
+          throwIfAborted(signal);
+
+          const terminalUpdate = await transaction.crawlResult.updateMany({
+            where: { id: crawlResult.id, status: 'running' },
+            data: {
+              status: budgetTermination ? 'failed' : 'completed',
+              completedAt: new Date(),
+              errorMessage: budgetTerminationMessage,
+              totalLinksFound: crawlData.totalLinksFound,
+              totalLinksChecked: crawlData.totalLinksChecked,
+              brokenLinksFound: crawlData.brokenLinksFound,
+              redirectsFound: crawlData.redirectsFound,
+              timeoutsFound: crawlData.timeoutsFound,
+              averageResponseTime: crawlData.averageResponseTime,
+              summary: {
+                ...(currentResult.summary || {}),
+                crawlDuration: crawlData.endTime - crawlData.startTime,
+                errors: crawlData.errors,
+                budget: crawlData.budget,
+                terminationReason: budgetTermination,
+              },
+            },
+          });
+          if (terminalUpdate.count !== 1) {
+            throw new Error(
+              'Crawl result changed before persistence completed.'
+            );
+          }
+
+          const persistedResult = await transaction.crawlResult.findUnique({
+            where: { id: crawlResult.id },
+          });
+          const expectedStatus = budgetTermination ? 'failed' : 'completed';
+          if (persistedResult?.status !== expectedStatus) {
+            throw new Error(
+              'Crawl terminal status was not confirmed in the transaction.'
+            );
+          }
+          return {
+            claimed: true,
+            crawlResult: persistedResult,
+          };
+        });
+
+        crawlResult = persistence.crawlResult;
+        if (!persistence.claimed) {
+          if (crawlResult?.status === 'failed') {
+            return {
+              success: false,
+              crawlResultId: crawlResult.id,
+              terminationReason:
+                crawlResult.summary?.terminationReason || 'cancelled',
+              errorMessage: crawlResult.errorMessage,
+            };
+          }
+          return {
+            success: crawlResult?.status === 'completed',
+            crawlResultId: crawlResult?.id || retryCrawlResultId,
+            message: 'Crawl result was already finalized',
+          };
         }
 
-        // Update website statistics
-        await this.updateWebsiteStats(website, crawlData);
-
-        await publish({
-          status: 'completed',
-          progress: 100,
-          completedAt: crawlResult.completedAt.toISOString(),
-          totalLinksFound: crawlData.totalLinksFound,
-          totalLinksChecked: crawlData.totalLinksChecked,
-          brokenLinksFound: crawlData.brokenLinksFound,
-        });
+        if (budgetTermination) {
+          await publish({
+            status: 'failed',
+            progress: lastPublishedProgress,
+            completedAt: crawlResult.completedAt.toISOString(),
+            errorMessage: budgetTerminationMessage,
+          });
+        } else {
+          await publish({
+            status: 'completed',
+            progress: 100,
+            completedAt: crawlResult.completedAt.toISOString(),
+            totalLinksFound: crawlData.totalLinksFound,
+            totalLinksChecked: crawlData.totalLinksChecked,
+            brokenLinksFound: crawlData.brokenLinksFound,
+          });
+        }
 
         if (!isManualProcessing) {
           job.progress(95);
@@ -427,6 +633,7 @@ class CrawlProcessor {
 
         // Send email notifications if there are broken links or if it's a scheduled crawl
         if (
+          !budgetTermination &&
           (crawlData.brokenLinksFound > 0 || scheduledBy === 'cron') &&
           website.notificationEmail
         ) {
@@ -454,7 +661,7 @@ class CrawlProcessor {
         }
 
         // Send webhook notification if configured
-        if (website.webhookUrl) {
+        if (!budgetTermination && website.webhookUrl) {
           try {
             console.log(
               `🪝 Sending webhook notification to ${website.webhookUrl}`
@@ -474,6 +681,15 @@ class CrawlProcessor {
           job.progress(100);
         }
 
+        if (budgetTermination) {
+          return {
+            success: false,
+            crawlResultId: crawlResult.id,
+            terminationReason: budgetTermination,
+            errorMessage: budgetTerminationMessage,
+          };
+        }
+
         console.log(
           `Crawl completed for website ${websiteId}: ${crawlData.brokenLinksFound} broken links found`
         );
@@ -485,21 +701,93 @@ class CrawlProcessor {
           totalLinksChecked: crawlData.totalLinksChecked,
         };
       } catch (crawlError) {
-        // Update crawl result as failed
-        await prisma.crawlResult.update({
-          where: { id: crawlResult.id },
+        if (
+          signal?.reason?.reason === 'lease_lost' ||
+          crawlError.code === 'CRAWL_LEASE_LOST'
+        ) {
+          throw new CrawlLeaseLostError(
+            signal?.reason?.message || crawlError.message
+          );
+        }
+        if (signal?.aborted || crawlError.code === 'CRAWL_CANCELLED') {
+          await job.discard?.();
+          const cancellation = signal?.reason || crawlError;
+          const terminationReason = cancellation.reason || 'cancelled';
+          const message = cancellation.message || 'Crawl was cancelled.';
+          const terminalUpdate = await prisma.crawlResult.updateMany({
+            where: { id: crawlResult.id, status: 'running' },
+            data: {
+              status: 'failed',
+              completedAt: new Date(),
+              errorMessage: message,
+              summary: {
+                ...(crawlResult.summary || {}),
+                terminationReason,
+              },
+            },
+          });
+          const terminalResult = await prisma.crawlResult.findUnique({
+            where: { id: crawlResult.id },
+          });
+          if (
+            terminalUpdate.count === 0 &&
+            terminalResult?.status === 'completed'
+          ) {
+            return {
+              success: true,
+              crawlResultId: terminalResult.id,
+              message: 'Crawl completed before cancellation was recorded',
+            };
+          }
+          if (terminalUpdate.count === 0) {
+            return {
+              success: false,
+              crawlResultId: terminalResult?.id || crawlResult.id,
+              terminationReason:
+                terminalResult?.summary?.terminationReason || terminationReason,
+              errorMessage: terminalResult?.errorMessage || message,
+            };
+          }
+          await publish({
+            status: 'failed',
+            progress: lastPublishedProgress,
+            completedAt: terminalResult.completedAt.toISOString(),
+            errorMessage: message,
+          });
+          return {
+            success: false,
+            crawlResultId: terminalResult.id,
+            terminationReason,
+            errorMessage: message,
+          };
+        }
+
+        const failureUpdate = await prisma.crawlResult.updateMany({
+          where: { id: crawlResult.id, status: 'running' },
           data: {
             status: 'failed',
             completedAt: new Date(),
             errorMessage: crawlError.message,
           },
         });
+        const storedResult = await prisma.crawlResult.findUnique({
+          where: { id: crawlResult.id },
+        });
+        if (failureUpdate.count === 0 && storedResult?.status === 'completed') {
+          return {
+            success: true,
+            crawlResultId: storedResult.id,
+            message: 'Crawl completed before the worker error was recorded',
+          };
+        }
 
         await publish({
           status: 'failed',
           progress: lastPublishedProgress,
-          completedAt: new Date().toISOString(),
-          errorMessage: crawlError.message,
+          completedAt:
+            storedResult?.completedAt?.toISOString() ||
+            new Date().toISOString(),
+          errorMessage: storedResult?.errorMessage || crawlError.message,
         });
 
         throw crawlError;
@@ -510,39 +798,26 @@ class CrawlProcessor {
     }
   }
 
-  async updateWebsiteStats(website, crawlData) {
-    try {
-      const updateData = {
-        lastCrawledAt: new Date(),
-        totalLinks: crawlData.totalLinksChecked,
-        brokenLinks: crawlData.brokenLinksFound,
-      };
+  async updateWebsiteStats(transaction, website, crawlData) {
+    const updateData = {
+      lastCrawledAt: new Date(),
+      totalLinks: crawlData.totalLinksChecked,
+      brokenLinks: crawlData.brokenLinksFound,
+      nextCrawlAt: this.calculateNextCrawlTime(website.crawlFrequency),
+    };
 
-      // Calculate next crawl time based on frequency
-      const nextCrawlAt = this.calculateNextCrawlTime(website.crawlFrequency);
-      updateData.nextCrawlAt = nextCrawlAt;
-
-      // Update health score
-      if (crawlData.totalLinksChecked > 0) {
-        const healthScore = Math.max(
-          0,
-          100 - (crawlData.brokenLinksFound / crawlData.totalLinksChecked) * 100
-        );
-        updateData.healthScore = Math.round(healthScore * 100) / 100;
-      }
-
-      await prisma.website.update({
-        where: { id: website.id },
-        data: updateData,
-      });
-
-      console.log(
-        `Updated stats for website ${website.id}: Health Score ${updateData.healthScore}%`
+    if (crawlData.totalLinksChecked > 0) {
+      const healthScore = Math.max(
+        0,
+        100 - (crawlData.brokenLinksFound / crawlData.totalLinksChecked) * 100
       );
-    } catch (error) {
-      console.error('Failed to update website stats:', error);
-      // Don't throw error as this shouldn't fail the crawl job
+      updateData.healthScore = Math.round(healthScore * 100) / 100;
     }
+
+    await transaction.website.update({
+      where: { id: website.id },
+      data: updateData,
+    });
   }
 
   calculateNextCrawlTime(frequency) {
@@ -570,8 +845,6 @@ class CrawlProcessor {
   }
 
   async sendWebhookNotification(website, crawlResult, brokenLinks) {
-    const axios = require('axios');
-
     const webhookPayload = {
       event: 'crawl_completed',
       timestamp: new Date().toISOString(),
@@ -598,7 +871,9 @@ class CrawlProcessor {
     };
 
     try {
-      const response = await axios.post(website.webhookUrl, webhookPayload, {
+      const response = await requestPublicUrl(website.webhookUrl, {
+        method: 'post',
+        data: webhookPayload,
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'DeadLink-Watchdog/1.0',

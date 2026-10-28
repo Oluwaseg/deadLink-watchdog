@@ -97,14 +97,25 @@ const prisma = {
       return website;
     },
     delete: async ({ where }) => {
+      fixture.websiteDeleteCalls += 1;
       const index = fixture.websites.findIndex(
         (website) => website.id === where.id
       );
       return fixture.websites.splice(index, 1)[0];
     },
   },
-  brokenLink: { deleteMany: async () => ({ count: 0 }) },
-  crawlResult: { deleteMany: async () => ({ count: 0 }) },
+  brokenLink: {
+    deleteMany: async () => {
+      fixture.childDeleteCalls += 1;
+      return { count: 0 };
+    },
+  },
+  crawlResult: {
+    deleteMany: async () => {
+      fixture.childDeleteCalls += 1;
+      return { count: 0 };
+    },
+  },
 };
 
 const originalLoad = Module._load;
@@ -162,6 +173,8 @@ async function startFixture(initialCount = 0, inactiveIndex = -1) {
     transactionTail: Promise.resolve(),
     queuedCrawls: [],
     removedRecurringJobs: [],
+    websiteDeleteCalls: 0,
+    childDeleteCalls: 0,
     queueError: null,
   };
 
@@ -214,6 +227,12 @@ async function startFixture(initialCount = 0, inactiveIndex = -1) {
     get queuedCrawls() {
       return fixture.queuedCrawls;
     },
+    get websiteDeleteCalls() {
+      return fixture.websiteDeleteCalls;
+    },
+    get childDeleteCalls() {
+      return fixture.childDeleteCalls;
+    },
     set queueError(error) {
       fixture.queueError = error;
     },
@@ -248,6 +267,41 @@ test('rejects a fourth website with a stable 409 limit error', async (t) => {
   assert.equal(payload.code, 'WEBSITE_LIMIT_REACHED');
   assert.match(payload.error, /up to 3 websites/i);
   assert.equal(instance.websites.length, 3);
+  assert.equal(instance.queuedCrawls.length, 0);
+});
+
+test('rejects non-HTTP schemes and credentials in website and webhook URLs', async (t) => {
+  const instance = await withFixture(t);
+  const invalidBodies = [
+    {
+      name: 'Unsafe scheme',
+      url: 'file:///etc/passwd',
+    },
+    {
+      name: 'Embedded credentials',
+      url: 'https://user:pass@public.example.com/',
+    },
+    {
+      name: 'Unsafe webhook scheme',
+      url: 'https://public.example.com/',
+      webhookUrl: 'ftp://public.example.com/hook',
+    },
+    {
+      name: 'Webhook credentials',
+      url: 'https://public.example.com/',
+      webhookUrl: 'https://user:pass@public.example.com/hook',
+    },
+  ];
+
+  for (const body of invalidBodies) {
+    const response = await instance.request('', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(instance.websites.length, 0);
   assert.equal(instance.queuedCrawls.length, 0);
 });
 
@@ -296,6 +350,8 @@ test('preserves existing accounts above the limit and blocks new creation', asyn
 
   const deleteResponse = await instance.delete(websiteId);
   assert.equal(deleteResponse.status, 200);
+  assert.equal(instance.websiteDeleteCalls, 1);
+  assert.equal(instance.childDeleteCalls, 0);
   assert.equal(instance.websites.length, 3);
 });
 

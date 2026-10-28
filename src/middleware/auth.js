@@ -2,6 +2,14 @@ const jwt = require('jsonwebtoken');
 const prisma = require('../lib/prisma');
 const config = require('../../config/config');
 
+const verifyAccessToken = (token) => {
+  const decoded = jwt.verify(token, config.jwt.secret);
+  if (decoded.tokenUse !== 'access') {
+    throw new jwt.JsonWebTokenError('Invalid token purpose');
+  }
+  return decoded;
+};
+
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -14,7 +22,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     // Verify the token
-    const decoded = jwt.verify(token, config.jwt.secret);
+    const decoded = verifyAccessToken(token);
 
     // Find the user
     const user = await prisma.user.findUnique({
@@ -78,7 +86,7 @@ const optionalAuth = async (req, res, next) => {
     const token = authHeader && authHeader.split(' ')[1];
 
     if (token) {
-      const decoded = jwt.verify(token, config.jwt.secret);
+      const decoded = verifyAccessToken(token);
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
         omit: { password: true },
@@ -103,20 +111,32 @@ const generateTokens = (user) => {
     role: user.role,
   };
 
-  const accessToken = jwt.sign(payload, config.jwt.secret, {
-    expiresIn: config.jwt.expiresIn,
-  });
+  const accessToken = jwt.sign(
+    { ...payload, tokenUse: 'access' },
+    config.jwt.secret,
+    {
+      expiresIn: config.jwt.expiresIn,
+    }
+  );
 
-  const refreshToken = jwt.sign(payload, config.jwt.secret, {
-    expiresIn: '30d',
-  });
+  const refreshToken = jwt.sign(
+    { ...payload, tokenUse: 'refresh' },
+    config.jwt.secret,
+    {
+      expiresIn: '30d',
+    }
+  );
 
   return { accessToken, refreshToken };
 };
 
 const verifyRefreshToken = (token) => {
   try {
-    return jwt.verify(token, config.jwt.secret);
+    const decoded = jwt.verify(token, config.jwt.secret);
+    if (decoded.tokenUse !== 'refresh') {
+      throw new jwt.JsonWebTokenError('Invalid token purpose');
+    }
+    return decoded;
   } catch (error) {
     throw new Error('Invalid refresh token');
   }
@@ -127,5 +147,6 @@ module.exports = {
   requireAdmin,
   optionalAuth,
   generateTokens,
+  verifyAccessToken,
   verifyRefreshToken,
 };

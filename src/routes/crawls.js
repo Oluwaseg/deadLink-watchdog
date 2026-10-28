@@ -398,6 +398,7 @@ router.post(
         crawlDepth: crawlResult.crawlDepth || 1,
         priority: 'high',
         scheduledBy: 'retry',
+        crawlResultId: crawlResult.id,
       }
     );
 

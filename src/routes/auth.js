@@ -10,6 +10,7 @@ const {
 } = require('../middleware/auth');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 const emailService = require('../services/email');
+const { verifyEmailCode } = require('../services/emailVerification');
 
 const router = express.Router();
 
@@ -75,9 +76,7 @@ router.post(
     }
 
     // Generate email verification code
-    const verificationCode = Math.floor(
-      100000 + Math.random() * 900000
-    ).toString();
+    const verificationCode = crypto.randomInt(100000, 1000000).toString();
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     // Create new user (not verified initially)
@@ -203,22 +202,14 @@ router.post(
       .withMessage('Please provide a valid email'),
     body('code')
       .isLength({ min: 6, max: 6 })
+      .isNumeric()
       .withMessage('Verification code must be 6 digits'),
   ],
   checkValidation,
   asyncHandler(async (req, res) => {
     const { email, code } = req.body;
 
-    // Find user with matching email and verification code
-    const user = await prisma.user.findFirst({
-      where: {
-        email,
-        emailVerificationCode: code,
-        emailVerificationExpires: {
-          gt: new Date(),
-        },
-      },
-    });
+    const user = await verifyEmailCode(prisma, email, code);
 
     if (!user) {
       throw new AppError(
@@ -228,15 +219,7 @@ router.post(
       );
     }
 
-    // Mark email as verified and clear verification fields
-    const verifiedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        emailVerified: true,
-        emailVerificationCode: null,
-        emailVerificationExpires: null,
-      },
-    });
+    const verifiedUser = user;
 
     // Send welcome email
     try {
@@ -306,9 +289,7 @@ router.post(
     }
 
     // Generate new verification code
-    const verificationCode = Math.floor(
-      100000 + Math.random() * 900000
-    ).toString();
+    const verificationCode = crypto.randomInt(100000, 1000000).toString();
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     // Update user with new code
@@ -317,6 +298,7 @@ router.post(
       data: {
         emailVerificationCode: verificationCode,
         emailVerificationExpires: verificationExpires,
+        emailVerificationAttempts: 0,
       },
     });
 
@@ -571,9 +553,6 @@ router.post(
       success: true,
       message:
         'If an account with that email exists, a password reset link has been sent.',
-      // Remove this in production - only for testing
-      resetToken:
-        process.env.NODE_ENV === 'development' ? resetToken : undefined,
     });
   })
 );
@@ -611,15 +590,26 @@ router.post(
       );
     }
 
-    // Update password and clear reset token
-    await prisma.user.update({
-      where: { id: user.id },
+    // Consume the reset token in the same conditional write that changes the password.
+    const reset = await prisma.user.updateMany({
+      where: {
+        id: user.id,
+        resetPasswordToken: token,
+        resetPasswordExpires: { gt: new Date() },
+      },
       data: {
         password: await hashPassword(newPassword),
         resetPasswordToken: null,
         resetPasswordExpires: null,
       },
     });
+    if (reset.count !== 1) {
+      throw new AppError(
+        'Invalid or expired reset token',
+        400,
+        'INVALID_RESET_TOKEN'
+      );
+    }
 
     res.json({
       success: true,

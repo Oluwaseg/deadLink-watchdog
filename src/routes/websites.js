@@ -7,6 +7,7 @@ const {
   toPrismaErrorType,
   fromPrismaErrorType,
 } = require('../utils/errorType');
+const { parseOutboundUrl } = require('../services/outboundUrlPolicy');
 
 const router = express.Router();
 const queueService = new QueueService();
@@ -14,7 +15,10 @@ const queueService = new QueueService();
 // Validation middleware
 const validateWebsite = [
   body('url')
-    .isURL({ protocols: ['http', 'https'] })
+    .custom((value) => {
+      parseOutboundUrl(value);
+      return true;
+    })
     .withMessage('Please provide a valid URL'),
   body('name')
     .trim()
@@ -51,7 +55,10 @@ const validateWebsite = [
   body('webhookUrl')
     .optional({ nullable: true })
     .if((value) => value !== null && value !== '')
-    .isURL()
+    .custom((value) => {
+      parseOutboundUrl(value);
+      return true;
+    })
     .withMessage('Please provide a valid webhook URL'),
 ];
 
@@ -394,15 +401,6 @@ router.delete(
     }
 
     await queueService.removeRecurringCrawlJob(website.id);
-
-    await prisma.brokenLink.deleteMany({
-      where: { websiteId: website.id },
-    });
-
-    await prisma.crawlResult.deleteMany({
-      where: { websiteId: website.id },
-    });
-
     await prisma.website.delete({
       where: { id: website.id },
     });

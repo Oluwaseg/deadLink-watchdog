@@ -7,9 +7,18 @@ const queuePath = require.resolve('../src/services/queue');
 const redisValues = new Map();
 let fakeQueues;
 let queueAddError = null;
+let fakeEvalOverride = null;
 fakeQueues = [];
 
 class FakeRedis {
+  async get(key) {
+    return redisValues.get(key) ?? null;
+  }
+
+  async del(key) {
+    return redisValues.delete(key) ? 1 : 0;
+  }
+
   async set(key, value, ...options) {
     if (options.includes('NX') && redisValues.has(key)) return null;
     redisValues.set(key, value);
@@ -17,6 +26,8 @@ class FakeRedis {
   }
 
   async eval(script, keyCount, key, token, ttl) {
+    if (fakeEvalOverride)
+      return fakeEvalOverride(script, keyCount, key, token, ttl);
     if (redisValues.get(key) !== token) return 0;
     if (script.includes('pexpire')) return 1;
     if (script.includes("redis.call('del'")) {
@@ -62,6 +73,9 @@ class FakeBull extends EventEmitter {
       async remove() {
         const index = this.queue.jobs.indexOf(this);
         if (index !== -1) this.queue.jobs.splice(index, 1);
+      },
+      async getState() {
+        return this.state;
       },
       async retry() {
         this.state = 'waiting';
@@ -276,12 +290,108 @@ test('limits simultaneous crawl execution per user across service instances', as
   await secondSlot.release();
 });
 
+test('execution lease renewal failure immediately notifies the owning worker once', async (t) => {
+  const { service, queue } = setup(t);
+  const originalSetInterval = global.setInterval;
+  let renewCallback;
+  global.setInterval = (callback) => {
+    renewCallback = callback;
+    return { fakeTimer: true };
+  };
+  t.after(() => {
+    global.setInterval = originalSetInterval;
+  });
+
+  const lostErrors = [];
+  const lease = await service.acquireCrawlExecutionSlot(
+    'user-lease-loss',
+    null,
+    (error) => lostErrors.push(error)
+  );
+  const lockKey = queue.toKey('crawl-user-slot:user-lease-loss:0');
+  fakeEvalOverride = async () => 0;
+  t.after(() => {
+    fakeEvalOverride = null;
+  });
+
+  renewCallback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(lease.leaseLost, true);
+  assert.equal(lostErrors.length, 1);
+  assert.match(lostErrors[0].message, /no longer owned/i);
+  await lease.release();
+  assert.equal(redisValues.has(lockKey), true);
+});
+
+test('execution lease release cannot delete a replacement worker token', async (t) => {
+  const { service, queue } = setup(t);
+  const originalSetInterval = global.setInterval;
+  global.setInterval = () => ({ fakeTimer: true });
+  t.after(() => {
+    global.setInterval = originalSetInterval;
+  });
+
+  const lease = await service.acquireCrawlExecutionSlot('user-replaced-lease');
+  const lockKey = queue.toKey('crawl-user-slot:user-replaced-lease:0');
+  redisValues.set(lockKey, 'replacement-worker-token');
+
+  await lease.release();
+
+  assert.equal(redisValues.get(lockKey), 'replacement-worker-token');
+});
+
 test('failed Bull enqueue leaves no phantom active job capacity', async (t) => {
   const { service, queue } = setup(t);
   queueAddError = new Error('redis add failed');
   await assert.rejects(enqueue(service, 'website-1'), /redis add failed/);
 
   queueAddError = null;
+  await enqueue(service, 'website-1');
+  assert.equal(queue.jobs.length, 1);
+});
+
+test('canceling an active crawl writes the shared cancellation signal', async (t) => {
+  const { service, queue } = setup(t);
+  const active = await enqueue(service, 'website-1');
+  active.state = 'active';
+
+  assert.equal(await service.cancelJob('crawl', active.id), true);
+  assert.equal(
+    redisValues.get(queue.toKey(`crawl-cancel:${active.id}`)),
+    'cancelled'
+  );
+  assert.equal(queue.jobs.includes(active), true);
+});
+
+test('worker cancellation watcher observes and clears the shared Redis signal', async (t) => {
+  const { service, queue } = setup(t);
+  const controller = new AbortController();
+  await service.requestCrawlCancellation('active-job-id');
+  const stopWatching = await service.watchCrawlCancellation(
+    'active-job-id',
+    controller,
+    5
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason.reason, 'cancelled');
+
+  await stopWatching();
+  await service.clearCrawlCancellation('active-job-id');
+  assert.equal(
+    await queue.client.get(queue.toKey('crawl-cancel:active-job-id')),
+    null
+  );
+});
+
+test('canceling a waiting crawl removes it without leaving active capacity', async (t) => {
+  const { service, queue } = setup(t);
+  const waiting = await enqueue(service, 'website-1');
+
+  assert.equal(await service.cancelJob('crawl', waiting.id), true);
+  assert.equal(queue.jobs.includes(waiting), false);
   await enqueue(service, 'website-1');
   assert.equal(queue.jobs.length, 1);
 });

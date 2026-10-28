@@ -13,7 +13,17 @@ const CRAWL_ID = '33333333-3333-4333-8333-333333333333';
 const WEBSITE_ID = '44444444-4444-4444-8444-444444444444';
 
 function tokenFor(userId, options = {}) {
-  return jwt.sign({ userId }, SECRET, { expiresIn: '1h', ...options });
+  return jwt.sign({ userId, tokenUse: 'access' }, SECRET, {
+    expiresIn: '1h',
+    ...options,
+  });
+}
+
+function purposeTokenFor(userId, tokenUse, options = {}) {
+  return jwt.sign({ userId, tokenUse }, SECRET, {
+    expiresIn: '1h',
+    ...options,
+  });
 }
 
 async function createFixture() {
@@ -139,6 +149,13 @@ test('rejects missing, invalid, and expired access tokens', async (t) => {
   clients.push(expired);
   const expiredError = await expectConnectError(expired);
   assert.equal(expiredError.data.code, 'TOKEN_EXPIRED');
+
+  const refreshPurpose = fixture.client(
+    purposeTokenFor(OWNER_ID, 'refresh', { expiresIn: '30d' })
+  );
+  clients.push(refreshPurpose);
+  const refreshPurposeError = await expectConnectError(refreshPurpose);
+  assert.equal(refreshPurposeError.data.code, 'INVALID_TOKEN');
 });
 
 test('disconnects an established socket when its access token expires', async (t) => {

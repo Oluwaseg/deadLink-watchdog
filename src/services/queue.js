@@ -1,12 +1,18 @@
 const Bull = require('bull');
 const { randomUUID } = require('crypto');
 const config = require('../../config/config');
+const {
+  CrawlCancellationError,
+  abortableDelay,
+  throwIfAborted,
+} = require('./crawlCancellation');
 
 const ADMISSION_LOCK_TTL_MS = 60000;
 const ADMISSION_LOCK_WAIT_MS = 10000;
 const ADMISSION_LOCK_RENEW_MS = 15000;
 const EXECUTION_LOCK_RENEW_MS = 30000;
 const ACTIVE_CRAWL_STATES = ['waiting', 'active', 'delayed', 'paused'];
+const CRAWL_CANCEL_KEY_TTL_MS = 10 * 60 * 1000;
 let queueEventListenersRegistered = false;
 
 const RELEASE_LOCK_SCRIPT = `
@@ -49,6 +55,7 @@ const redisConfig = {
 // Create job queues
 const crawlQueue = new Bull('crawl queue', {
   redis: redisConfig,
+  ...(config.redis.prefix ? { prefix: config.redis.prefix } : {}),
   defaultJobOptions: {
     removeOnComplete: 50, // Keep last 50 completed jobs
     removeOnFail: 100, // Keep last 100 failed jobs
@@ -62,6 +69,7 @@ const crawlQueue = new Bull('crawl queue', {
 
 const notificationQueue = new Bull('notification queue', {
   redis: redisConfig,
+  ...(config.redis.prefix ? { prefix: config.redis.prefix } : {}),
   defaultJobOptions: {
     removeOnComplete: 20,
     removeOnFail: 50,
@@ -117,6 +125,7 @@ class QueueService {
       crawlDepth: options.crawlDepth || 1,
       priority: options.priority || 'normal',
       scheduledBy: options.scheduledBy || 'manual',
+      crawlResultId: options.crawlResultId || null,
     };
 
     const jobOptions = {
@@ -256,7 +265,7 @@ class QueueService {
     }
   }
 
-  async acquireCrawlExecutionSlot(userId) {
+  async acquireCrawlExecutionSlot(userId, signal = null, onLeaseLost = null) {
     const client = this.crawlQueue.client;
     const slotCount = config.crawler.maxConcurrentPerUser;
     const leaseMs = config.crawler.userExecutionLeaseMs;
@@ -264,7 +273,9 @@ class QueueService {
     let slotKey;
 
     while (!slotKey) {
+      throwIfAborted(signal);
       for (let slot = 0; slot < slotCount; slot += 1) {
+        throwIfAborted(signal);
         const candidateKey = this.crawlQueue.toKey(
           `crawl-user-slot:${userId}:${slot}`
         );
@@ -280,12 +291,26 @@ class QueueService {
           break;
         }
       }
-      if (!slotKey) await wait(250);
+      if (!slotKey) await abortableDelay(250, signal);
     }
 
     let released = false;
     let leaseLost = false;
     let renewTimer;
+    let renewalPromise = null;
+    const markLeaseLost = (error) => {
+      if (released || leaseLost) return;
+      leaseLost = true;
+      clearInterval(renewTimer);
+      try {
+        onLeaseLost?.(error);
+      } catch (callbackError) {
+        console.error(
+          'Crawl execution lease-loss callback failed:',
+          callbackError
+        );
+      }
+    };
     const renew = async () => {
       if (released || leaseLost) return;
       try {
@@ -296,13 +321,25 @@ class QueueService {
           ownerToken,
           leaseMs
         );
-        if (Number(renewed) !== 1) leaseLost = true;
-      } catch {
-        leaseLost = true;
+        if (released) return;
+        if (Number(renewed) !== 1) {
+          markLeaseLost(
+            new Error(
+              'Crawl execution lease is no longer owned by this worker.'
+            )
+          );
+        }
+      } catch (error) {
+        markLeaseLost(error);
       }
     };
 
-    renewTimer = setInterval(renew, EXECUTION_LOCK_RENEW_MS);
+    renewTimer = setInterval(() => {
+      if (renewalPromise || released || leaseLost) return;
+      renewalPromise = renew().finally(() => {
+        renewalPromise = null;
+      });
+    }, EXECUTION_LOCK_RENEW_MS);
 
     return {
       get leaseLost() {
@@ -312,6 +349,7 @@ class QueueService {
         if (released) return;
         released = true;
         clearInterval(renewTimer);
+        await renewalPromise?.catch(() => {});
         try {
           await client.eval(RELEASE_LOCK_SCRIPT, 1, slotKey, ownerToken);
         } catch (error) {
@@ -322,6 +360,56 @@ class QueueService {
         }
       },
     };
+  }
+
+  async requestCrawlCancellation(jobId) {
+    const cancelKey = this.crawlQueue.toKey(`crawl-cancel:${jobId}`);
+    await this.crawlQueue.client.set(
+      cancelKey,
+      'cancelled',
+      'PX',
+      CRAWL_CANCEL_KEY_TTL_MS
+    );
+  }
+
+  async watchCrawlCancellation(jobId, controller, intervalMs = 200) {
+    const client = this.crawlQueue.client;
+    const cancelKey = this.crawlQueue.toKey(`crawl-cancel:${jobId}`);
+    let stopped = false;
+    let checking = false;
+
+    const check = async () => {
+      if (stopped || checking || controller.signal.aborted) return;
+      checking = true;
+      try {
+        const value = await client.get(cancelKey);
+        if (value === 'cancelled') {
+          controller.abort(new CrawlCancellationError('cancelled'));
+        }
+      } catch (error) {
+        console.error('Failed to check crawl cancellation state:', error);
+      } finally {
+        checking = false;
+      }
+    };
+
+    await check();
+    const timer = setInterval(check, intervalMs);
+    timer.unref?.();
+
+    return async () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }
+
+  async clearCrawlCancellation(jobId) {
+    const cancelKey = this.crawlQueue.toKey(`crawl-cancel:${jobId}`);
+    try {
+      await this.crawlQueue.client.del(cancelKey);
+    } catch (error) {
+      console.error('Failed to clear crawl cancellation key:', error);
+    }
   }
 
   // Add a notification job to the queue
@@ -468,6 +556,10 @@ class QueueService {
     const job = await queue.getJob(jobId);
 
     if (job) {
+      if (queueType === 'crawl' && (await job.getState()) === 'active') {
+        await this.requestCrawlCancellation(jobId);
+        return true;
+      }
       await job.remove();
       console.log(`Cancelled job ${jobId} from ${queueType} queue`);
       return true;
@@ -593,13 +685,28 @@ class QueueService {
   }
 }
 
-const acquireCrawlExecutionSlot = (userId) =>
-  QueueService.prototype.acquireCrawlExecutionSlot.call({ crawlQueue }, userId);
+const acquireCrawlExecutionSlot = (userId, signal, onLeaseLost) =>
+  QueueService.prototype.acquireCrawlExecutionSlot.call(
+    { crawlQueue },
+    userId,
+    signal,
+    onLeaseLost
+  );
+const watchCrawlCancellation = (jobId, controller) =>
+  QueueService.prototype.watchCrawlCancellation.call(
+    { crawlQueue },
+    jobId,
+    controller
+  );
+const clearCrawlCancellation = (jobId) =>
+  QueueService.prototype.clearCrawlCancellation.call({ crawlQueue }, jobId);
 
 module.exports = {
   QueueAdmissionError,
   QueueService,
   acquireCrawlExecutionSlot,
+  watchCrawlCancellation,
+  clearCrawlCancellation,
   crawlQueue,
   notificationQueue,
 };

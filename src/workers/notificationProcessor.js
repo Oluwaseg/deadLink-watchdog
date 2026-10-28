@@ -1,4 +1,5 @@
 const { notificationQueue } = require('../services/queue');
+const { requestPublicUrl } = require('../services/outboundUrlPolicy');
 
 class NotificationProcessor {
   constructor() {
@@ -44,8 +45,9 @@ class NotificationProcessor {
     try {
       job.progress(10);
 
-      const axios = require('axios');
-      const response = await axios.post(url, data, {
+      const response = await requestPublicUrl(url, {
+        method: 'post',
+        data,
         timeout: 10000,
         headers: {
           'Content-Type': 'application/json',

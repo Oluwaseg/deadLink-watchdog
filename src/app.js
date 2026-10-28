@@ -49,7 +49,6 @@ class App {
     this.setupMiddleware();
     this.setupRoutes();
     this.setupErrorHandling();
-    this.startWorkers().catch(console.error);
   }
 
   setupMiddleware() {
@@ -239,6 +238,9 @@ class App {
       // Test database connection
       await prisma.$connect();
       console.log('Database connection established successfully');
+
+      // Do not accept API traffic until required queue workers are ready.
+      await this.startWorkers();
 
       // Start the server
       this.server.listen(config.port, () => {

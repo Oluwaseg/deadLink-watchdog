@@ -18,7 +18,11 @@ function createRealtimeServer(httpServer, { jwtSecret, prisma, origin }) {
       }
 
       const claims = jwt.verify(token, jwtSecret);
-      if (typeof claims.userId !== 'string' || !Number.isInteger(claims.exp)) {
+      if (
+        claims.tokenUse !== 'access' ||
+        typeof claims.userId !== 'string' ||
+        !Number.isInteger(claims.exp)
+      ) {
         const error = new Error('Invalid access token');
         error.data = { code: 'INVALID_TOKEN' };
         return next(error);

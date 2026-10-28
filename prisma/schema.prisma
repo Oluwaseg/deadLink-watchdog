@@ -64,6 +64,7 @@ model User {
   emailVerified             Boolean   @default(false)
   emailVerificationCode     String?
   emailVerificationExpires  DateTime?
+  emailVerificationAttempts Int       @default(0)
   lastLoginAt               DateTime?
   resetPasswordToken        String?
   resetPasswordExpires      DateTime?
@@ -157,12 +158,24 @@ model CrawlResult {
   user              User         @relation("UserCrawlResults", fields: [userId], references: [id], onDelete: Cascade)
   brokenLinkRecords BrokenLink[]
   notifications     Notification[]
+  bullJobs          CrawlJobResult[]
 
   @@index([websiteId])
   @@index([userId])
   @@index([status])
   @@index([createdAt])
   @@map("crawl_results")
+}
+
+model CrawlJobResult {
+  bullJobId     String      @id
+  crawlResultId String      @db.Uuid
+  createdAt     DateTime    @default(now())
+
+  crawlResult CrawlResult @relation(fields: [crawlResultId], references: [id], onDelete: Cascade)
+
+  @@index([crawlResultId])
+  @@map("crawl_job_results")
 }
 
 model BrokenLink {

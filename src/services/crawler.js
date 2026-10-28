@@ -1,11 +1,52 @@
 const puppeteer = require('puppeteer');
-const axios = require('axios');
 const { URL } = require('url');
+const net = require('node:net');
 const config = require('../../config/config');
+const CrawlBudget = require('./crawlBudget');
+const createOutboundProxy = require('./outboundProxy');
+const {
+  isPublicAddress,
+  parseOutboundUrl,
+  requestPublicUrl,
+  resolveOutboundDestination,
+} = require('./outboundUrlPolicy');
+const {
+  abortableDelay,
+  raceWithAbort,
+  throwIfAborted,
+} = require('./crawlCancellation');
+
+class CrawlBudgetExhaustedError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.code = 'CRAWL_BUDGET_EXHAUSTED';
+    this.terminationReason = reason;
+  }
+}
+
+const budgetReasonMessage = (reason) => {
+  if (reason === 'max_pages_reached') {
+    return `Crawl stopped after reaching the ${config.crawler.maxPagesPerCrawl}-page limit.`;
+  }
+  if (reason === 'max_network_requests_reached') {
+    return `Crawl stopped after reaching the ${config.crawler.maxNetworkRequestsPerCrawl}-network-request limit.`;
+  }
+  return 'Crawl stopped after reaching a configured workload limit.';
+};
 
 class WebCrawler {
-  constructor() {
+  constructor({
+    resolver,
+    validateAddress = isPublicAddress,
+    browserExecutablePath,
+  } = {}) {
     this.browser = null;
+    this.outboundProxy = null;
+    this.outboundProxyUrl = null;
+    this.initializing = null;
+    this.outboundResolver = resolver;
+    this.outboundAddressValidator = validateAddress;
+    this.browserExecutablePath = browserExecutablePath;
     this.userAgent = config.crawler.userAgent;
     this.timeout = config.crawler.timeout;
     this.delay = config.crawler.delay;
@@ -24,21 +65,52 @@ class WebCrawler {
 
   async initialize() {
     if (!this.browser) {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        ...(config.crawler.executablePath
-          ? { executablePath: config.crawler.executablePath }
-          : {}),
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-        ],
-      });
+      if (!this.initializing) {
+        this.initializing = (async () => {
+          this.outboundProxy = createOutboundProxy({
+            resolver: this.outboundResolver,
+            validateAddress: this.outboundAddressValidator,
+          });
+          this.outboundProxyUrl = await this.outboundProxy.listen();
+          try {
+            this.browser = await puppeteer.launch({
+              headless: true,
+              ...(this.browserExecutablePath || config.crawler.executablePath
+                ? {
+                    executablePath:
+                      this.browserExecutablePath ||
+                      config.crawler.executablePath,
+                  }
+                : {}),
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-quic',
+                '--dns-prefetch-disable',
+                '--host-resolver-rules=MAP *.test ~NOTFOUND, EXCLUDE 127.0.0.1',
+                '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+                `--proxy-server=${this.outboundProxyUrl}`,
+                '--proxy-bypass-list=<-loopback>',
+              ],
+            });
+          } catch (error) {
+            await this.outboundProxy.close();
+            this.outboundProxy = null;
+            this.outboundProxyUrl = null;
+            throw error;
+          }
+        })();
+      }
+      try {
+        await this.initializing;
+      } finally {
+        this.initializing = null;
+      }
     }
   }
 
@@ -47,28 +119,106 @@ class WebCrawler {
       await this.browser.close();
       this.browser = null;
     }
+    if (this.outboundProxy) {
+      await this.outboundProxy.close();
+      this.outboundProxy = null;
+      this.outboundProxyUrl = null;
+    }
   }
 
-  async extractLinks(url, depth = 1) {
-    await this.initialize();
+  async extractLinks(url, depth = 1, budget = null, signal = null) {
+    throwIfAborted(signal);
+    const parsedUrl = parseOutboundUrl(url);
+    const crawlBudget =
+      budget ||
+      new CrawlBudget({
+        maxPages: config.crawler.maxPagesPerCrawl,
+        maxNetworkRequests: config.crawler.maxNetworkRequestsPerCrawl,
+      });
+    const pageReservation = crawlBudget.reservePage(url);
+    if (!pageReservation.allowed) {
+      return { links: [], errors: [] };
+    }
+    await raceWithAbort(
+      resolveOutboundDestination(
+        parsedUrl,
+        this.outboundResolver,
+        this.outboundAddressValidator
+      ),
+      signal
+    );
 
-    const page = await this.browser.newPage();
-    await page.setUserAgent(this.userAgent);
+    await raceWithAbort(this.initialize(), signal);
+    throwIfAborted(signal);
 
-    // Set a shorter timeout for page operations
-    page.setDefaultTimeout(this.timeout);
-
+    const pagePromise = this.browser.newPage();
+    let page;
+    try {
+      page = await raceWithAbort(pagePromise, signal);
+    } catch (error) {
+      pagePromise.then((latePage) => latePage.close()).catch(() => {});
+      throw error;
+    }
+    const closePageOnAbort = () => {
+      page.close().catch(() => {});
+    };
+    signal?.addEventListener('abort', closePageOnAbort, { once: true });
     const links = new Set();
     const errors = [];
 
     try {
+      throwIfAborted(signal);
+      await page.setUserAgent(this.userAgent);
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        void (async () => {
+          try {
+            if (request.isInterceptResolutionHandled?.()) return;
+            throwIfAborted(signal);
+            const requestUrl = new URL(request.url());
+            if (['data:', 'blob:', 'about:'].includes(requestUrl.protocol)) {
+              await request.continue();
+              return;
+            }
+            parseOutboundUrl(requestUrl.href);
+            if (!crawlBudget.reserveNetworkRequest()) {
+              await request.abort('blockedbyclient');
+              return;
+            }
+            await raceWithAbort(
+              resolveOutboundDestination(
+                requestUrl,
+                this.outboundResolver,
+                this.outboundAddressValidator
+              ),
+              signal
+            );
+            throwIfAborted(signal);
+            if (!request.isInterceptResolutionHandled?.()) {
+              await request.continue();
+            }
+          } catch {
+            if (!request.isInterceptResolutionHandled?.()) {
+              await request.abort('blockedbyclient').catch(() => {});
+            }
+          }
+        })();
+      });
+
+      // Set a shorter timeout for page operations
+      page.setDefaultTimeout(this.timeout);
+
       console.log(`Extracting links from: ${url}`);
 
       // Navigate to the page with a more lenient wait condition
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded', // Changed from 'networkidle2' to be faster
-        timeout: this.timeout,
-      });
+      await raceWithAbort(
+        page.goto(parsedUrl.href, {
+          waitUntil: 'domcontentloaded', // Changed from 'networkidle2' to be faster
+          timeout: this.timeout,
+        }),
+        signal
+      );
+      throwIfAborted(signal);
 
       console.log(`Successfully loaded page: ${url}`);
 
@@ -167,6 +317,7 @@ class WebCrawler {
 
         return links;
       });
+      throwIfAborted(signal);
 
       console.log(`Found ${pageLinks.length} links on page: ${url}`);
 
@@ -206,7 +357,7 @@ class WebCrawler {
       }
 
       // If depth > 1, crawl internal links
-      if (depth > 1) {
+      if (depth > 1 && !crawlBudget.exhausted) {
         const baseUrl = new URL(url);
         const internalLinks = Array.from(links).filter((link) => {
           try {
@@ -220,12 +371,30 @@ class WebCrawler {
         // Crawl a subset of internal links (limit to prevent infinite crawling)
         const linksToProcess = internalLinks.slice(0, 10);
         for (const link of linksToProcess) {
+          throwIfAborted(signal);
+          if (crawlBudget.exhausted) break;
+          let alreadyVisited = false;
           try {
-            (await this.delay) &&
-              new Promise((resolve) => setTimeout(resolve, this.delay));
-            const subLinks = await this.extractLinks(link.url, depth - 1);
+            const candidate = new URL(link.url);
+            candidate.hash = '';
+            alreadyVisited = crawlBudget.visitedPages.has(candidate.href);
+          } catch {
+            alreadyVisited = true;
+          }
+          if (alreadyVisited) continue;
+
+          try {
+            await abortableDelay(this.delay, signal);
+            const subLinks = await this.extractLinks(
+              link.url,
+              depth - 1,
+              crawlBudget,
+              signal
+            );
             subLinks.forEach((subLink) => links.add(subLink));
           } catch (error) {
+            if (signal?.aborted) throw error;
+            if (crawlBudget.exhausted) break;
             errors.push({
               url: link.url,
               error: error.message,
@@ -234,12 +403,13 @@ class WebCrawler {
         }
       }
     } catch (error) {
-      errors.push({
-        url: url,
-        error: error.message,
-      });
+      if (signal?.aborted) throw error;
+      if (!crawlBudget.exhausted) {
+        errors.push({ url, error: error.message });
+      }
     } finally {
-      await page.close();
+      signal?.removeEventListener('abort', closePageOnAbort);
+      await page.close().catch(() => {});
     }
 
     return {
@@ -248,7 +418,15 @@ class WebCrawler {
     };
   }
 
-  async checkLink(url, sourceUrl = null, retryCount = 0, linkType = 'anchor') {
+  async checkLink(
+    url,
+    sourceUrl = null,
+    retryCount = 0,
+    linkType = 'anchor',
+    budget = null,
+    signal = null
+  ) {
+    throwIfAborted(signal);
     const startTime = Date.now();
     const result = {
       url,
@@ -321,14 +499,28 @@ class WebCrawler {
       const method =
         linkType === 'image' || linkType === 'script' ? 'head' : 'get';
 
-      const response = await axios({
-        method,
+      const response = await requestPublicUrl(
         url,
-        timeout: this.timeout,
-        maxRedirects: 5,
-        validateStatus: () => true, // Don't throw on 4xx/5xx
-        headers,
-      });
+        {
+          method,
+          timeout: this.timeout,
+          maxRedirects: 5,
+          headers,
+          signal,
+          beforeRequest: () => {
+            throwIfAborted(signal);
+            if (budget && !budget.reserveNetworkRequest()) {
+              throw new CrawlBudgetExhaustedError(
+                budget.terminationReason || 'max_network_requests_reached'
+              );
+            }
+          },
+        },
+        {
+          resolver: this.outboundResolver,
+          validateAddress: this.outboundAddressValidator,
+        }
+      );
 
       result.statusCode = response.status;
       result.responseTime = Date.now() - startTime;
@@ -391,6 +583,19 @@ class WebCrawler {
         result.errorMessage = `Unknown status code: ${response.status}`;
       }
     } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
+      if (
+        error.code === 'CRAWL_BUDGET_EXHAUSTED' ||
+        budget?.terminationReason === 'max_network_requests_reached'
+      ) {
+        result.status = 'skipped';
+        result.errorType = 'crawl_budget_exhausted';
+        result.errorMessage = budgetReasonMessage(
+          budget?.terminationReason || error.terminationReason
+        );
+        return result;
+      }
+
       result.responseTime = Date.now() - startTime;
       result.status = 'broken';
       result.errorMessage = error.message;
@@ -453,8 +658,16 @@ class WebCrawler {
           `Retrying ${url} in ${retryDelay}ms (attempt ${retryCount + 1})`
         );
 
-        await new Promise((resolve) => setTimeout(resolve, retryDelay));
-        return this.checkLink(url, sourceUrl, retryCount + 1);
+        await abortableDelay(retryDelay, signal);
+        throwIfAborted(signal);
+        return this.checkLink(
+          url,
+          sourceUrl,
+          retryCount + 1,
+          linkType,
+          budget,
+          signal
+        );
       }
     }
 
@@ -470,40 +683,9 @@ class WebCrawler {
   // Enhanced URL validation
   isValidUrl(url) {
     try {
-      const urlObj = new URL(url);
-
-      // Check protocol
-      if (!['http:', 'https:'].includes(urlObj.protocol)) {
-        return false;
-      }
-
-      // Check for suspicious patterns
-      const suspiciousPatterns = [
-        /javascript:/i,
-        /data:/i,
-        /file:/i,
-        /ftp:/i,
-        /mailto:/i,
-        /tel:/i,
-        /sms:/i,
-        /whatsapp:/i,
-        /telegram:/i,
-      ];
-
-      if (suspiciousPatterns.some((pattern) => pattern.test(url))) {
-        return false;
-      }
-
-      // Check for valid hostname
-      if (!urlObj.hostname || urlObj.hostname.length === 0) {
-        return false;
-      }
-
-      // Check for localhost/private IPs (unless in development)
-      if (this.isPrivateOrLocalhost(urlObj.hostname)) {
-        return false;
-      }
-
+      const parsed = parseOutboundUrl(url);
+      const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+      if (net.isIP(hostname)) return isPublicAddress(hostname);
       return true;
     } catch {
       return false;
@@ -512,16 +694,7 @@ class WebCrawler {
 
   // Check if hostname is private or localhost
   isPrivateOrLocalhost(hostname) {
-    const privatePatterns = [
-      /^localhost$/i,
-      /^127\./,
-      /^192\.168\./,
-      /^10\./,
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-      /^0\.0\.0\.0$/,
-    ];
-
-    return privatePatterns.some((pattern) => pattern.test(hostname));
+    return !isPublicAddress(hostname);
   }
 
   // Determine if a request should be retried
@@ -601,7 +774,12 @@ class WebCrawler {
     }
   }
 
-  async checkMultipleLinks(links, onProgress = null) {
+  async checkMultipleLinks(
+    links,
+    onProgress = null,
+    budget = null,
+    signal = null
+  ) {
     const results = [];
     const total = links.length;
     const maxConcurrent = config.crawler.maxConcurrent || 5;
@@ -609,6 +787,11 @@ class WebCrawler {
 
     // Process links in batches to control concurrency
     for (let i = 0; i < links.length; i += maxConcurrent) {
+      throwIfAborted(signal);
+      if (budget?.networkRequestLimitReached) {
+        if (i < links.length) budget.reserveNetworkRequest();
+        break;
+      }
       const batch = links.slice(i, i + maxConcurrent);
 
       // Process batch concurrently
@@ -616,17 +799,21 @@ class WebCrawler {
         const globalIndex = i + batchIndex;
 
         try {
+          throwIfAborted(signal);
           // Enhanced rate limiting per domain
           const domain = this.extractDomain(link.url);
           if (domain) {
-            await this.enforceRateLimit(domain);
+            await this.enforceRateLimit(domain, signal);
           }
+          throwIfAborted(signal);
 
           const result = await this.checkLink(
             link.url,
             link.sourceUrl,
             0,
-            link.type
+            link.type,
+            budget,
+            signal
           );
           result.linkText = link.text;
 
@@ -642,6 +829,7 @@ class WebCrawler {
 
           return result;
         } catch (error) {
+          if (signal?.aborted) throw error;
           const errorResult = {
             url: link.url,
             sourceUrl: link.sourceUrl,
@@ -667,6 +855,7 @@ class WebCrawler {
 
       // Wait for batch to complete
       const batchResults = await Promise.all(batchPromises);
+      throwIfAborted(signal);
       results.push(...batchResults);
 
       // Add delay between batches to be respectful to servers
@@ -689,7 +878,8 @@ class WebCrawler {
   }
 
   // Enhanced rate limiting per domain with fast mode optimization
-  async enforceRateLimit(domain) {
+  async enforceRateLimit(domain, signal = null) {
+    throwIfAborted(signal);
     // Skip rate limiting in fast mode for better performance
     if (this.fastMode) {
       return;
@@ -719,7 +909,7 @@ class WebCrawler {
 
       if (waitTime > 0) {
         console.log(`Rate limiting ${domain}: waiting ${waitTime}ms`);
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
+        await abortableDelay(waitTime, signal);
       }
     }
 
@@ -861,7 +1051,12 @@ class WebCrawler {
   }
 
   async crawlWebsite(url, options = {}) {
-    const { depth = 1, onProgress = null } = options;
+    const { depth = 1, onProgress = null, signal = null } = options;
+    throwIfAborted(signal);
+    const budget = new CrawlBudget({
+      maxPages: config.crawler.maxPagesPerCrawl,
+      maxNetworkRequests: config.crawler.maxNetworkRequestsPerCrawl,
+    });
     const crawlId = `crawl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     console.log(`[${crawlId}] Starting crawl for: ${url}`);
@@ -886,11 +1081,19 @@ class WebCrawler {
         circuitBreakerTrips: 0,
         domainsChecked: new Set(),
       },
+      budget: budget.toJSON(),
+      terminationReason: null,
     };
 
     try {
       // Extract links from the website
-      const { links, errors } = await this.extractLinks(url, depth);
+      const { links, errors } = await this.extractLinks(
+        url,
+        depth,
+        budget,
+        signal
+      );
+      throwIfAborted(signal);
       crawlResult.links = links;
       crawlResult.errors = errors;
       crawlResult.totalLinksFound = links.length;
@@ -899,40 +1102,50 @@ class WebCrawler {
         onProgress({
           phase: 'extraction',
           message: `Found ${links.length} links to check`,
+          budget: budget.toJSON(),
         });
       }
 
       // Check each link
-      const linkResults = await this.checkMultipleLinks(links, (progress) => {
-        // Track metrics
-        if (progress.result) {
-          if (progress.result.cached) {
-            crawlResult.metrics.cacheHits++;
-          }
-          if (progress.result.retryCount > 0) {
-            crawlResult.metrics.retries += progress.result.retryCount;
-          }
-          if (progress.result.errorType === 'circuit_breaker_open') {
-            crawlResult.metrics.circuitBreakerTrips++;
+      const linkResults = await this.checkMultipleLinks(
+        links,
+        (progress) => {
+          // Track metrics
+          if (progress.result) {
+            if (progress.result.cached) {
+              crawlResult.metrics.cacheHits++;
+            }
+            if (progress.result.retryCount > 0) {
+              crawlResult.metrics.retries += progress.result.retryCount;
+            }
+            if (progress.result.errorType === 'circuit_breaker_open') {
+              crawlResult.metrics.circuitBreakerTrips++;
+            }
+
+            const domain = this.extractDomain(progress.result.url);
+            if (domain) {
+              crawlResult.metrics.domainsChecked.add(domain);
+            }
           }
 
-          const domain = this.extractDomain(progress.result.url);
-          if (domain) {
-            crawlResult.metrics.domainsChecked.add(domain);
+          if (onProgress) {
+            onProgress({
+              phase: 'checking',
+              ...progress,
+              metrics: crawlResult.metrics,
+              budget: budget.toJSON(),
+            });
           }
-        }
-
-        if (onProgress) {
-          onProgress({
-            phase: 'checking',
-            ...progress,
-            metrics: crawlResult.metrics,
-          });
-        }
-      });
+        },
+        budget,
+        signal
+      );
+      throwIfAborted(signal);
 
       // Process results
-      crawlResult.totalLinksChecked = linkResults.length;
+      crawlResult.totalLinksChecked = linkResults.filter(
+        (result) => result.status !== 'skipped'
+      ).length;
       let totalResponseTime = 0;
 
       for (const result of linkResults) {
@@ -963,21 +1176,36 @@ class WebCrawler {
       );
 
       crawlResult.endTime = new Date();
+      crawlResult.budget = budget.toJSON();
+      crawlResult.terminationReason = budget.terminationReason;
+      if (budget.terminationReason) {
+        crawlResult.errors.push({
+          url,
+          error: budgetReasonMessage(budget.terminationReason),
+          errorType: budget.terminationReason,
+        });
+      }
 
       // Log crawl completion with metrics
       const duration = crawlResult.endTime - crawlResult.startTime;
-      console.log(`[${crawlId}] Crawl completed in ${duration}ms:`, {
-        totalLinks: crawlResult.totalLinksFound,
-        brokenLinks: crawlResult.brokenLinksFound,
-        cacheHits: crawlResult.metrics.cacheHits,
-        retries: crawlResult.metrics.retries,
-        circuitBreakerTrips: crawlResult.metrics.circuitBreakerTrips,
-        uniqueDomains: crawlResult.metrics.domainsChecked.length,
-        averageResponseTime: crawlResult.averageResponseTime,
-      });
+      console.log(
+        `[${crawlId}] ${budget.terminationReason ? 'Crawl stopped early' : 'Crawl completed'} in ${duration}ms:`,
+        {
+          totalLinks: crawlResult.totalLinksFound,
+          pagesProcessed: budget.pagesProcessed,
+          networkRequests: budget.networkRequests,
+          brokenLinks: crawlResult.brokenLinksFound,
+          cacheHits: crawlResult.metrics.cacheHits,
+          retries: crawlResult.metrics.retries,
+          circuitBreakerTrips: crawlResult.metrics.circuitBreakerTrips,
+          uniqueDomains: crawlResult.metrics.domainsChecked.length,
+          averageResponseTime: crawlResult.averageResponseTime,
+        }
+      );
 
       return crawlResult;
     } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
       crawlResult.endTime = new Date();
       crawlResult.errors.push({
         url,
