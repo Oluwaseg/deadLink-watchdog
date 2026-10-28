@@ -1,46 +1,7 @@
-<html>
-  <head>
-    <meta charset='utf-8' />
-    <title>Welcome to {{appName}}</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        background-color: #f4f6f8;
-        color: #333;
-        margin: 0;
-        padding: 0;
-      }
-      .container {
-        width: 100%;
-        max-width: 600px;
-        margin: 0 auto;
-        padding: 24px;
-        background: #ffffff;
-        border-radius: 8px;
-      }
-      .header {
-        font-size: 24px;
-        font-weight: 700;
-        margin-bottom: 16px;
-      }
-      .footer {
-        margin-top: 24px;
-        font-size: 13px;
-        color: #6b7280;
-      }
-    </style>
-  </head>
-  <body>
-    <div class='container'>
+{{> shared/header maxWidth="600px"}}
       <div class='header'>Welcome to {{appName}}</div>
       <p>Hi {{firstName}},</p>
       <p>Thank you for verifying your email. Your account is now ready to use.</p>
       <p>Visit your dashboard to start monitoring broken links on your websites
         and keep your site health in check.</p>
-      <div class='footer'>
-        <p>All the best,</p>
-        <p>The {{appName}} team</p>
-      </div>
-    </div>
-  </body>
-</html>
+{{> shared/footer closing="All the best,"}}

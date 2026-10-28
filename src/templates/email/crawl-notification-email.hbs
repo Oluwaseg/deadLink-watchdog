@@ -1,68 +1,4 @@
-<html>
-  <head>
-    <meta charset='utf-8' />
-    <title>Crawl report for {{websiteName}}</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        background-color: #f4f6f8;
-        color: #333;
-        margin: 0;
-        padding: 0;
-      }
-      .container {
-        width: 100%;
-        max-width: 700px;
-        margin: 0 auto;
-        padding: 24px;
-        background: #ffffff;
-        border-radius: 8px;
-      }
-      .header {
-        font-size: 24px;
-        font-weight: 700;
-        margin-bottom: 16px;
-      }
-      .summary,
-      .broken-links,
-      .footer {
-        margin-top: 20px;
-      }
-      .summary-box {
-        padding: 16px;
-        background: #f8fafc;
-        border-radius: 8px;
-        border: 1px solid #e5e7eb;
-      }
-      .status {
-        font-size: 16px;
-        font-weight: 700;
-        margin-top: 8px;
-      }
-      .broken-link {
-        padding: 14px;
-        background: #fef2f2;
-        border: 1px solid #fecaca;
-        border-radius: 8px;
-        margin-top: 10px;
-      }
-      .button {
-        display: inline-block;
-        background-color: #2563eb;
-        color: #ffffff;
-        padding: 12px 20px;
-        border-radius: 6px;
-        text-decoration: none;
-        margin-top: 16px;
-      }
-      .footer {
-        font-size: 13px;
-        color: #6b7280;
-      }
-    </style>
-  </head>
-  <body>
-    <div class='container'>
+{{> shared/header maxWidth="700px"}}
       <div class='header'>Crawl report for {{websiteName}}</div>
       <p>Hi {{firstName}},</p>
       <p>{{statusMessage}}</p>
@@ -97,12 +33,4 @@
         </div>
       {{/if}}
 
-      <div class='footer'>
-        <p>Visit your dashboard to review the full crawl details and manage your
-          website notifications.</p>
-        <p>Thanks,</p>
-        <p>The {{appName}} team</p>
-      </div>
-    </div>
-  </body>
-</html>
+{{> shared/footer closing="Thanks," footerNote="Visit your dashboard to review the full crawl details and manage your website notifications."}}

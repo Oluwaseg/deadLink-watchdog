@@ -49,12 +49,19 @@ class EmailService {
 
   loadTemplates() {
     const templatesDir = path.join(__dirname, '../templates/email');
+    const sharedTemplatesDir = path.join(__dirname, '../templates/shared');
     const templateFiles = [
       'verification-email.hbs',
       'password-reset-email.hbs',
       'welcome-email.hbs',
       'crawl-notification-email.hbs',
     ];
+
+    ['header', 'footer'].forEach((partialName) => {
+      const partialPath = path.join(sharedTemplatesDir, `${partialName}.hbs`);
+      const partialContents = fs.readFileSync(partialPath, 'utf8');
+      handlebars.registerPartial(`shared/${partialName}`, partialContents);
+    });
 
     templateFiles.forEach((fileName) => {
       try {
@@ -129,6 +136,7 @@ class EmailService {
       subject: `Verify your email for ${this.fromName}`,
       templateName: 'verification-email',
       context: {
+        emailTitle: 'Verify your email',
         firstName: firstName || 'there',
         verificationCode,
         expiryHours: '24',
@@ -143,6 +151,7 @@ class EmailService {
       subject: `Reset your ${this.fromName} password`,
       templateName: 'password-reset-email',
       context: {
+        emailTitle: 'Password reset request',
         firstName: firstName || 'there',
         resetUrl,
         expiryHours: '1',
@@ -156,6 +165,7 @@ class EmailService {
       subject: `Welcome to ${this.fromName}`,
       templateName: 'welcome-email',
       context: {
+        emailTitle: `Welcome to ${this.fromName}`,
         firstName: firstName || 'there',
       },
     });
@@ -177,6 +187,7 @@ class EmailService {
           : `✅ Crawl Report for ${website.name}`,
       templateName: 'crawl-notification-email',
       context: {
+        emailTitle: `Crawl report for ${website.name}`,
         firstName: firstName || 'there',
         websiteName: website.name,
         websiteUrl: website.url,
